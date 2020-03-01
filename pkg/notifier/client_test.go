@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func Test_postMessage(t *testing.T) {
@@ -17,14 +19,10 @@ func Test_postMessage(t *testing.T) {
 		var payload = make(map[string]string)
 		err = json.Unmarshal(b, &payload)
 
-		if payload["status"] != "success" {
-			t.Fatal("wrong payload")
-		}
+		require.Equal(t, "success", payload["status"])
 	}))
 	defer ts.Close()
 
 	err := postMessage(ts.URL, map[string]string{"status": "success"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }

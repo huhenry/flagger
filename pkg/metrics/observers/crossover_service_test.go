@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
 	"github.com/weaveworks/flagger/pkg/metrics/providers"
 )
@@ -44,9 +45,7 @@ func TestCrossoverServiceObserver_GetRequestSuccessRate(t *testing.T) {
 		Service:   "podinfo",
 		Interval:  "1m",
 	})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if val != 100 {
 		t.Errorf("Got %v wanted %v", val, 100)
@@ -87,9 +86,7 @@ func TestCrossoverServiceObserver_GetRequestDuration(t *testing.T) {
 		Service:   "podinfo",
 		Interval:  "1m",
 	})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if val != 100*time.Millisecond {
 		t.Errorf("Got %v wanted %v", val, 100*time.Millisecond)

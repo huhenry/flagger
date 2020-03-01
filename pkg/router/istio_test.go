@@ -6,6 +6,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stretchr/testify/require"
 	istiov1alpha3 "github.com/weaveworks/flagger/pkg/apis/istio/v1alpha3"
 )
 
@@ -19,25 +20,17 @@ func TestIstioRouter_Sync(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// test insert
 	_, err = mocks.meshClient.NetworkingV1alpha3().DestinationRules("default").Get("podinfo-canary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	_, err = mocks.meshClient.NetworkingV1alpha3().DestinationRules("default").Get("podinfo-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if len(vs.Spec.Http) != 1 {
 		t.Errorf("Got Istio VS Http %v wanted %v", len(vs.Spec.Http), 1)
@@ -49,30 +42,22 @@ func TestIstioRouter_Sync(t *testing.T) {
 
 	// test update
 	cd, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	cdClone := cd.DeepCopy()
 	hosts := cdClone.Spec.Service.Hosts
 	hosts = append(hosts, "test.example.com")
 	cdClone.Spec.Service.Hosts = hosts
 	canary, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Update(cdClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// apply change
 	err = router.Reconcile(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// verify
 	vs, err = mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	if len(vs.Spec.Hosts) != 2 {
 		t.Errorf("Got Istio VS hosts %v wanted %v", vs.Spec.Hosts, 2)
 	}
@@ -85,9 +70,7 @@ func TestIstioRouter_Sync(t *testing.T) {
 	totalGateways := len(mocks.canary.Spec.Service.Gateways)
 
 	vsGateways, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Update(vsClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	totalGateways++
 	if len(vsGateways.Spec.Gateways) != totalGateways {
@@ -97,15 +80,11 @@ func TestIstioRouter_Sync(t *testing.T) {
 	// undo change
 	totalGateways--
 	err = router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// verify
 	vs, err = mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	if len(vs.Spec.Gateways) != totalGateways {
 		t.Errorf("Got Istio VS gateways %v wanted %v", vs.Spec.Gateways, totalGateways)
 	}
@@ -121,28 +100,20 @@ func TestIstioRouter_SetRoutes(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err := router.GetRoutes(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p = 60
 	c = 40
 	m = false
 
 	err = router.SetRoutes(mocks.canary, p, c, m)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	pHost := fmt.Sprintf("%s-primary", mocks.canary.Spec.TargetRef.Name)
 	cHost := fmt.Sprintf("%s-canary", mocks.canary.Spec.TargetRef.Name)
@@ -180,14 +151,10 @@ func TestIstioRouter_SetRoutes(t *testing.T) {
 	m = true
 
 	err = router.SetRoutes(mocks.canary, p, c, m)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err = mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	for _, http := range vs.Spec.Http {
 		for _, route := range http.Route {
@@ -226,14 +193,10 @@ func TestIstioRouter_GetRoutes(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err := router.GetRoutes(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if p != 100 {
 		t.Errorf("Got primary weight %v wanted %v", p, 100)
@@ -250,14 +213,10 @@ func TestIstioRouter_GetRoutes(t *testing.T) {
 	mocks.canary = newTestMirror()
 
 	err = router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err = router.GetRoutes(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if p != 100 {
 		t.Errorf("Got primary weight %v wanted %v", p, 100)
@@ -275,9 +234,7 @@ func TestIstioRouter_GetRoutes(t *testing.T) {
 
 	// Adjust vs to activate mirroring.
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	cHost := fmt.Sprintf("%s-canary", mocks.canary.Spec.TargetRef.Name)
 	for i, http := range vs.Spec.Http {
@@ -290,14 +247,10 @@ func TestIstioRouter_GetRoutes(t *testing.T) {
 		}
 	}
 	_, err = mocks.meshClient.NetworkingV1alpha3().VirtualServices(mocks.canary.Namespace).Update(vs)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err = router.GetRoutes(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if p != 100 {
 		t.Errorf("Got primary weight %v wanted %v", p, 100)
@@ -322,14 +275,10 @@ func TestIstioRouter_HTTPRequestHeaders(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if len(vs.Spec.Http) != 1 {
 		t.Fatalf("Got HTTPRoute %v wanted %v", len(vs.Spec.Http), 1)
@@ -361,14 +310,10 @@ func TestIstioRouter_CORS(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if len(vs.Spec.Http) != 1 {
 		t.Fatalf("Got HTTPRoute %v wanted %v", len(vs.Spec.Http), 1)
@@ -394,15 +339,11 @@ func TestIstioRouter_ABTest(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.abtest)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// test insert
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("abtest", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if len(vs.Spec.Http) != 2 {
 		t.Errorf("Got Istio VS Http %v wanted %v", len(vs.Spec.Http), 2)
@@ -413,14 +354,10 @@ func TestIstioRouter_ABTest(t *testing.T) {
 	m := false
 
 	err = router.SetRoutes(mocks.abtest, p, c, m)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err = mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("abtest", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	pHost := fmt.Sprintf("%s-primary", mocks.abtest.Spec.TargetRef.Name)
 	cHost := fmt.Sprintf("%s-canary", mocks.abtest.Spec.TargetRef.Name)
@@ -463,14 +400,10 @@ func TestIstioRouter_GatewayPort(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	vs, err := mocks.meshClient.NetworkingV1alpha3().VirtualServices("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	port := vs.Spec.Http[0].Route[0].Destination.Port.Number
 	if port != uint32(mocks.canary.Spec.Service.Port) {

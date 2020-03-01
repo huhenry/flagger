@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/weaveworks/flagger/pkg/logger"
 )
 
@@ -31,6 +33,7 @@ func TestTaskRunner_Start(t *testing.T) {
 	tr.Add(task1)
 	tr.Add(task2)
 
+	assert.Equal(t, uint64(2), tr.GetTotalExecs())
 	if tr.GetTotalExecs() != 2 {
 		t.Errorf("Got total executed commands %v wanted %v", tr.GetTotalExecs(), 2)
 	}
@@ -41,8 +44,5 @@ func TestTaskRunner_Start(t *testing.T) {
 	tr.Add(task2)
 
 	time.Sleep(time.Second)
-
-	if tr.GetTotalExecs() != 4 {
-		t.Errorf("Got total executed commands %v wanted %v", tr.GetTotalExecs(), 4)
-	}
+	assert.Equal(t, uint64(4), tr.GetTotalExecs())
 }

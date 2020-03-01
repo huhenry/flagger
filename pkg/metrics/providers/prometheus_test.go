@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"github.com/stretchr/testify/require"
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
 	clientset "github.com/weaveworks/flagger/pkg/client/clientset/versioned"
 	fakeFlagger "github.com/weaveworks/flagger/pkg/client/clientset/versioned/fake"
@@ -67,19 +68,13 @@ func TestNewPrometheusProvider(t *testing.T) {
 	clients := prometheusFake()
 
 	template, err := clients.flaggerClient.FlaggerV1beta1().MetricTemplates("default").Get("prometheus", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	secret, err := clients.kubeClient.CoreV1().Secrets("default").Get("prometheus", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	prom, err := NewPrometheusProvider(template.Spec.Provider, secret.Data)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if prom.url.String() != "http://prometheus:9090" {
 		t.Errorf("Got URL %s wanted %s", prom.url.String(), "http://prometheus:9090")
@@ -114,25 +109,17 @@ func TestPrometheusProvider_RunQueryWithBasicAuth(t *testing.T) {
 	clients := prometheusFake()
 
 	template, err := clients.flaggerClient.FlaggerV1beta1().MetricTemplates("default").Get("prometheus", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	template.Spec.Provider.Address = ts.URL
 
 	secret, err := clients.kubeClient.CoreV1().Secrets("default").Get("prometheus", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	prom, err := NewPrometheusProvider(template.Spec.Provider, secret.Data)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	val, err := prom.RunQuery(template.Spec.Query)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if val != 100 {
 		t.Errorf("Got %v wanted %v", val, 100)
@@ -148,16 +135,12 @@ func TestPrometheusProvider_IsOnline(t *testing.T) {
 	clients := prometheusFake()
 
 	template, err := clients.flaggerClient.FlaggerV1beta1().MetricTemplates("default").Get("prometheus", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	template.Spec.Provider.Address = ts.URL
 	template.Spec.Provider.SecretRef = nil
 
 	prom, err := NewPrometheusProvider(template.Spec.Provider, nil)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	ok, err := prom.IsOnline()
 	if err == nil {

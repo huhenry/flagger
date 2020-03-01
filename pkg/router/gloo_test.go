@@ -6,6 +6,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stretchr/testify/require"
 	gloov1 "github.com/weaveworks/flagger/pkg/apis/gloo/v1"
 )
 
@@ -19,15 +20,11 @@ func TestGlooRouter_Sync(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// test insert
 	ug, err := router.glooClient.GlooV1().UpstreamGroups("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	dests := ug.Spec.Destinations
 	if len(dests) != 2 {
 		t.Errorf("Got Destinations %v wanted %v", len(dests), 2)
@@ -52,28 +49,20 @@ func TestGlooRouter_SetRoutes(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err := router.GetRoutes(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p = 50
 	c = 50
 	m = false
 
 	err = router.SetRoutes(mocks.canary, p, c, m)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	ug, err := router.glooClient.GlooV1().UpstreamGroups("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	var pRoute gloov1.WeightedDestination
 	var cRoute gloov1.WeightedDestination
@@ -109,14 +98,10 @@ func TestGlooRouter_GetRoutes(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err := router.GetRoutes(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if p != 100 {
 		t.Errorf("Got primary weight %v wanted %v", p, 100)

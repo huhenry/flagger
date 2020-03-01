@@ -15,7 +15,7 @@ func assertPhase(flaggerClient clientset.Interface, canary string, phase flagger
 	}
 
 	if c.Status.Phase != phase {
-		return fmt.Errorf("Got canary state %v wanted %v", c.Status.Phase, phase)
+		return fmt.Errorf("Got canary state %s wanted %s", c.Status.Phase, phase)
 	}
 
 	return nil

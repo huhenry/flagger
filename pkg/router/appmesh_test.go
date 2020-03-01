@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -19,16 +20,12 @@ func TestAppmeshRouter_Reconcile(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.appmeshCanary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// check virtual service
 	vsName := fmt.Sprintf("%s.%s", mocks.appmeshCanary.Spec.TargetRef.Name, mocks.appmeshCanary.Namespace)
 	vs, err := router.appmeshClient.AppmeshV1beta1().VirtualServices("default").Get(vsName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	meshName := mocks.appmeshCanary.Spec.Service.MeshName
 	if vs.Spec.MeshName != meshName {
@@ -43,9 +40,7 @@ func TestAppmeshRouter_Reconcile(t *testing.T) {
 	// check canary virtual service
 	vsCanaryName := fmt.Sprintf("%s-canary.%s", mocks.appmeshCanary.Spec.TargetRef.Name, mocks.appmeshCanary.Namespace)
 	vsCanary, err := router.appmeshClient.AppmeshV1beta1().VirtualServices("default").Get(vsCanaryName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// check if the canary virtual service routes all traffic to the canary virtual node
 	target := vsCanary.Spec.Routes[0].Http.Action.WeightedTargets[0]
@@ -60,9 +55,7 @@ func TestAppmeshRouter_Reconcile(t *testing.T) {
 	// check virtual node
 	vnName := mocks.appmeshCanary.Spec.TargetRef.Name
 	vn, err := router.appmeshClient.AppmeshV1beta1().VirtualNodes("default").Get(vnName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	primaryDNS := fmt.Sprintf("%s-primary.%s", mocks.appmeshCanary.Spec.TargetRef.Name, mocks.appmeshCanary.Namespace)
 	vnHostName := vn.Spec.ServiceDiscovery.Dns.HostName
@@ -72,31 +65,23 @@ func TestAppmeshRouter_Reconcile(t *testing.T) {
 
 	// test backends update
 	cd, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("appmesh", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	cdClone := cd.DeepCopy()
 	hosts := cdClone.Spec.Service.Backends
 	hosts = append(hosts, "test.example.com")
 	cdClone.Spec.Service.Backends = hosts
 	canary, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Update(cdClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// apply change
 	err = router.Reconcile(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// verify
 	vnCanaryName := fmt.Sprintf("%s-canary", mocks.appmeshCanary.Spec.TargetRef.Name)
 	vnCanary, err := router.appmeshClient.AppmeshV1beta1().VirtualNodes("default").Get(vnCanaryName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if len(vnCanary.Spec.Backends) != 2 {
 		t.Errorf("Got backends %v wanted %v", len(vnCanary.Spec.Backends), 2)
@@ -107,19 +92,13 @@ func TestAppmeshRouter_Reconcile(t *testing.T) {
 	vsClone.Spec.Routes[0].Http.Action.WeightedTargets[0].Weight = 50
 	vsClone.Spec.Routes[0].Http.Action.WeightedTargets[1].Weight = 50
 	vs, err = mocks.meshClient.AppmeshV1beta1().VirtualServices("default").Update(vsClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// apply change
 	err = router.Reconcile(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	vs, err = router.appmeshClient.AppmeshV1beta1().VirtualServices("default").Get(vsName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	weight := vs.Spec.Routes[0].Http.Action.WeightedTargets[0].Weight
 	if weight != 50 {
@@ -130,19 +109,13 @@ func TestAppmeshRouter_Reconcile(t *testing.T) {
 	vsClone = vs.DeepCopy()
 	vsClone.Spec.Routes[0].Http.Match.Prefix = "api"
 	vs, err = mocks.meshClient.AppmeshV1beta1().VirtualServices("default").Update(vsClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// apply change
 	err = router.Reconcile(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 	vs, err = router.appmeshClient.AppmeshV1beta1().VirtualServices("default").Get(vsName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	prefix := vs.Spec.Routes[0].Http.Match.Prefix
 	if prefix != "/" {
@@ -160,19 +133,13 @@ func TestAppmeshRouter_GetSetRoutes(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.appmeshCanary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	err = router.SetRoutes(mocks.appmeshCanary, 60, 40, false)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	p, c, m, err := router.GetRoutes(mocks.appmeshCanary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	if p != 60 {
 		t.Errorf("Got primary weight %v wanted %v", p, 60)
@@ -197,16 +164,12 @@ func TestAppmeshRouter_ABTest(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.abtest)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// check virtual service
 	vsName := fmt.Sprintf("%s.%s", mocks.abtest.Spec.TargetRef.Name, mocks.abtest.Namespace)
 	vs, err := router.appmeshClient.AppmeshV1beta1().VirtualServices("default").Get(vsName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// check virtual service
 	if len(vs.Spec.Routes) != 2 {
@@ -239,16 +202,12 @@ func TestAppmeshRouter_Gateway(t *testing.T) {
 	}
 
 	err := router.Reconcile(mocks.appmeshCanary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// check virtual service
 	vsName := fmt.Sprintf("%s.%s", mocks.appmeshCanary.Spec.TargetRef.Name, mocks.appmeshCanary.Namespace)
 	vs, err := router.appmeshClient.AppmeshV1beta1().VirtualServices("default").Get(vsName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	expose := vs.Annotations["gateway.appmesh.k8s.aws/expose"]
 	if expose != "true" {
