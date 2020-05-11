@@ -24,7 +24,7 @@ type KubernetesDefaultRouter struct {
 	kubeClient    kubernetes.Interface
 	flaggerClient clientset.Interface
 	logger        *zap.SugaredLogger
-	labelSelector string
+	labelSelector map[string]string
 	ports         map[string]int32
 }
 
@@ -33,13 +33,13 @@ func (c *KubernetesDefaultRouter) Initialize(canary *flaggerv1.Canary) error {
 	_, primaryName, canaryName := canary.GetServiceNames()
 
 	// canary svc
-	err := c.reconcileService(canary, canaryName, canary.Spec.TargetRef.Name, canary.Spec.Service.Canary)
+	err := c.reconcileService(canary, canaryName, "%s", canary.Spec.Service.Canary)
 	if err != nil {
 		return fmt.Errorf("reconcileService failed: %w", err)
 	}
 
 	// primary svc
-	err = c.reconcileService(canary, primaryName, fmt.Sprintf("%s-primary", canary.Spec.TargetRef.Name), canary.Spec.Service.Primary)
+	err = c.reconcileService(canary, primaryName, "%s-primary", canary.Spec.Service.Primary)
 	if err != nil {
 		return fmt.Errorf("reconcileService failed: %w", err)
 	}
@@ -52,7 +52,7 @@ func (c *KubernetesDefaultRouter) Reconcile(canary *flaggerv1.Canary) error {
 	apexName, _, _ := canary.GetServiceNames()
 
 	// main svc
-	err := c.reconcileService(canary, apexName, fmt.Sprintf("%s-primary", canary.Spec.TargetRef.Name), canary.Spec.Service.Apex)
+	err := c.reconcileService(canary, apexName, "%s-primary", canary.Spec.Service.Apex)
 	if err != nil {
 		return fmt.Errorf("reconcileService failed: %w", err)
 	}
@@ -68,7 +68,7 @@ func (c *KubernetesDefaultRouter) GetRoutes(_ *flaggerv1.Canary) (primaryRoute i
 	return 0, 0, nil
 }
 
-func (c *KubernetesDefaultRouter) reconcileService(canary *flaggerv1.Canary, name string, podSelector string, metadata *flaggerv1.CustomMetadata) error {
+func (c *KubernetesDefaultRouter) reconcileService(canary *flaggerv1.Canary, name string, podSelectorPattern string, metadata *flaggerv1.CustomMetadata) error {
 	portName := canary.Spec.Service.PortName
 	if portName == "" {
 		portName = "http"
@@ -86,7 +86,7 @@ func (c *KubernetesDefaultRouter) reconcileService(canary *flaggerv1.Canary, nam
 	// set pod selector and apex port
 	svcSpec := corev1.ServiceSpec{
 		Type:     corev1.ServiceTypeClusterIP,
-		Selector: map[string]string{c.labelSelector: podSelector},
+		Selector: makeSelectorLabels(c.labelSelector, podSelectorPattern),
 		Ports: []corev1.ServicePort{
 			{
 				Name:       portName,
@@ -119,7 +119,7 @@ func (c *KubernetesDefaultRouter) reconcileService(canary *flaggerv1.Canary, nam
 	if metadata.Labels == nil {
 		metadata.Labels = make(map[string]string)
 	}
-	metadata.Labels[c.labelSelector] = name
+	metadata.Labels = makeLabels(metadata.Labels, c.labelSelector, name)
 
 	if metadata.Annotations == nil {
 		metadata.Annotations = make(map[string]string)
@@ -239,7 +239,7 @@ func (c *KubernetesDefaultRouter) Finalize(canary *flaggerv1.Canary) error {
 				return fmt.Errorf("service %s update error: %w", clone.Name, err)
 			}
 		} else {
-			err = c.reconcileService(canary, apexName, canary.Spec.TargetRef.Name, nil)
+			err = c.reconcileService(canary, apexName, "%s", nil)
 			if err != nil {
 				return fmt.Errorf("reconcileService failed: %w", err)
 			}
@@ -267,4 +267,30 @@ func (c KubernetesDefaultRouter) isOwnedByCanary(obj interface{}, name string) (
 	}
 
 	return true, ownerRef.Name == name
+}
+
+func makeSelectorLabels(selectorLabel map[string]string, valuePattern string) map[string]string {
+	res := make(map[string]string)
+
+	for k, v := range selectorLabel {
+		res[k] = fmt.Sprintf(valuePattern, v)
+
+	}
+
+	return res
+}
+
+func makeLabels(labels, selectorLabel map[string]string, name string) map[string]string {
+	res := labels
+
+	if res == nil {
+		res = make(map[string]string)
+	}
+
+	for k := range selectorLabel {
+
+		res[k] = name
+	}
+
+	return res
 }

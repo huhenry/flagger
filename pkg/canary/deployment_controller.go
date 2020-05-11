@@ -18,6 +18,10 @@ import (
 	clientset "github.com/weaveworks/flagger/pkg/client/clientset/versioned"
 )
 
+const (
+	PrimaryNamePattern string = "%s-primary"
+)
+
 // DeploymentController is managing the operations for Kubernetes Deployment kind
 type DeploymentController struct {
 	kubeClient    kubernetes.Interface
@@ -72,7 +76,7 @@ func (c *DeploymentController) Promote(cd *flaggerv1.Canary) error {
 		return fmt.Errorf("deployment %s.%s get query error: %w", targetName, cd.Namespace, err)
 	}
 
-	label, err := c.getSelectorLabel(canary)
+	selectorlabel, err := c.getSelectorLabel(canary)
 	if err != nil {
 		return fmt.Errorf("getSelectorLabel failed: %w", err)
 	}
@@ -107,7 +111,7 @@ func (c *DeploymentController) Promote(cd *flaggerv1.Canary) error {
 	}
 
 	primaryCopy.Spec.Template.Annotations = annotations
-	primaryCopy.Spec.Template.Labels = makePrimaryLabels(canary.Spec.Template.Labels, primaryName, label)
+	primaryCopy.Spec.Template.Labels = makePrimaryLabels(canary.Spec.Template.Labels, PrimaryNamePattern, selectorlabel)
 
 	// apply update
 	_, err = c.kubeClient.AppsV1().Deployments(cd.Namespace).Update(context.TODO(), primaryCopy, metav1.UpdateOptions{})
@@ -181,17 +185,17 @@ func (c *DeploymentController) ScaleFromZero(cd *flaggerv1.Canary) error {
 }
 
 // GetMetadata returns the pod label selector and svc ports
-func (c *DeploymentController) GetMetadata(cd *flaggerv1.Canary) (string, map[string]int32, error) {
+func (c *DeploymentController) GetMetadata(cd *flaggerv1.Canary) (map[string]string, map[string]int32, error) {
 	targetName := cd.Spec.TargetRef.Name
 
 	canaryDep, err := c.kubeClient.AppsV1().Deployments(cd.Namespace).Get(context.TODO(), targetName, metav1.GetOptions{})
 	if err != nil {
-		return "", nil, fmt.Errorf("deployment %s.%s get query error: %w", targetName, cd.Namespace, err)
+		return nil, nil, fmt.Errorf("deployment %s.%s get query error: %w", targetName, cd.Namespace, err)
 	}
 
 	label, err := c.getSelectorLabel(canaryDep)
 	if err != nil {
-		return "", nil, fmt.Errorf("getSelectorLabel failed: %w", err)
+		return nil, nil, fmt.Errorf("getSelectorLabel failed: %w", err)
 	}
 
 	var ports map[string]int32
@@ -210,7 +214,7 @@ func (c *DeploymentController) createPrimaryDeployment(cd *flaggerv1.Canary) err
 		return fmt.Errorf("deplyoment %s.%s get query error: %w", targetName, cd.Namespace, err)
 	}
 
-	label, err := c.getSelectorLabel(canaryDep)
+	selectorLabel, err := c.getSelectorLabel(canaryDep)
 	if err != nil {
 		return fmt.Errorf("getSelectorLabel failed: %w", err)
 	}
@@ -240,9 +244,7 @@ func (c *DeploymentController) createPrimaryDeployment(cd *flaggerv1.Canary) err
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      primaryName,
 				Namespace: cd.Namespace,
-				Labels: map[string]string{
-					label: primaryName,
-				},
+				Labels:    makePrimaryLabels(canaryDep.GetLabels(), PrimaryNamePattern, selectorLabel),
 				OwnerReferences: []metav1.OwnerReference{
 					*metav1.NewControllerRef(cd, schema.GroupVersionKind{
 						Group:   flaggerv1.SchemeGroupVersion.Group,
@@ -258,13 +260,11 @@ func (c *DeploymentController) createPrimaryDeployment(cd *flaggerv1.Canary) err
 				Replicas:                int32p(replicas),
 				Strategy:                canaryDep.Spec.Strategy,
 				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						label: primaryName,
-					},
+					MatchLabels: makePrimaryLabels(canaryDep.Spec.Selector.MatchLabels, PrimaryNamePattern, selectorLabel),
 				},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
-						Labels:      makePrimaryLabels(canaryDep.Spec.Template.Labels, primaryName, label),
+						Labels:      makePrimaryLabels(canaryDep.Spec.Template.Labels, PrimaryNamePattern, selectorLabel),
 						Annotations: annotations,
 					},
 					// update spec with the primary secrets and config maps
@@ -361,14 +361,16 @@ func (c *DeploymentController) reconcilePrimaryHpa(cd *flaggerv1.Canary, init bo
 }
 
 // getSelectorLabel returns the selector match label
-func (c *DeploymentController) getSelectorLabel(deployment *appsv1.Deployment) (string, error) {
+func (c *DeploymentController) getSelectorLabel(deployment *appsv1.Deployment) (map[string]string, error) {
+	selectorLabel := make(map[string]string)
 	for _, l := range c.labels {
-		if _, ok := deployment.Spec.Selector.MatchLabels[l]; ok {
-			return l, nil
+		if v, ok := deployment.Spec.Selector.MatchLabels[l]; ok {
+			selectorLabel[l] = v
+			return selectorLabel, nil
 		}
 	}
 
-	return "", fmt.Errorf(
+	return nil, fmt.Errorf(
 		"deployment %s.%s spec.selector.matchLabels must contain one of %v",
 		deployment.Name, deployment.Namespace, c.labels,
 	)

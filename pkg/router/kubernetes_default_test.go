@@ -244,7 +244,7 @@ func TestServiceRouter_Finalize(t *testing.T) {
 		kubeClient:    mocks.kubeClient,
 		flaggerClient: mocks.flaggerClient,
 		logger:        mocks.logger,
-		labelSelector: "app",
+		labelSelector: map[string]string{"app": "podinfo"},
 	}
 
 	isController := new(bool)
@@ -354,7 +354,7 @@ func TestServiceRouter_InitializeMetadata(t *testing.T) {
 		kubeClient:    mocks.kubeClient,
 		flaggerClient: mocks.flaggerClient,
 		logger:        mocks.logger,
-		labelSelector: "app",
+		labelSelector: map[string]string{"app": "podinfo"},
 	}
 
 	metadata := &flaggerv1.CustomMetadata{
@@ -385,7 +385,7 @@ func TestServiceRouter_ReconcileMetadata(t *testing.T) {
 		kubeClient:    mocks.kubeClient,
 		flaggerClient: mocks.flaggerClient,
 		logger:        mocks.logger,
-		labelSelector: "app",
+		labelSelector: map[string]string{"app": "podinfo"},
 	}
 
 	mocks.canary.Spec.Service.Apex = &flaggerv1.CustomMetadata{

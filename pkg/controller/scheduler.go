@@ -108,7 +108,7 @@ func (c *Controller) advanceCanary(name string, namespace string) {
 		return
 	}
 
-	// init Kubernetes router
+	// init Kubernetes router  TODO
 	kubeRouter := c.routerFactory.KubernetesRouter(cd.Spec.TargetRef.Kind, labelSelector, ports)
 	if err := kubeRouter.Initialize(cd); err != nil {
 		c.recordEventWarningf(cd, "%v", err)

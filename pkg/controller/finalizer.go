@@ -55,7 +55,7 @@ func (c *Controller) finalize(old interface{}) error {
 		return fmt.Errorf("failed to get metadata for router finalizing: %w", err)
 	}
 
-	// Revert the Kubernetes service
+	// Revert the Kubernetes service  TODO
 	router := c.routerFactory.KubernetesRouter(canary.Spec.TargetRef.Kind, labelSelector, ports)
 	if err := router.Finalize(canary); err != nil {
 		return fmt.Errorf("failed revert router: %w", err)

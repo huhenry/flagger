@@ -75,14 +75,16 @@ func makeAnnotations(annotations map[string]string) (map[string]string, error) {
 	return res, nil
 }
 
-func makePrimaryLabels(labels map[string]string, primaryName string, label string) map[string]string {
+func makePrimaryLabels(labels map[string]string, primaryNamePattern string, selectorLabel map[string]string) map[string]string {
 	res := make(map[string]string)
 	for k, v := range labels {
-		if k != label {
-			res[k] = v
-		}
+
+		res[k] = v
 	}
-	res[label] = primaryName
+
+	for k, v := range selectorLabel {
+		res[k] = fmt.Sprintf(primaryNamePattern, v)
+	}
 
 	return res
 }

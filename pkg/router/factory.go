@@ -35,7 +35,7 @@ func NewFactory(kubeConfig *restclient.Config, kubeClient kubernetes.Interface,
 }
 
 // KubernetesRouter returns a KubernetesRouter interface implementation
-func (factory *Factory) KubernetesRouter(kind string, labelSelector string, ports map[string]int32) KubernetesRouter {
+func (factory *Factory) KubernetesRouter(kind string, labelSelector map[string]string, ports map[string]int32) KubernetesRouter {
 	switch kind {
 	case "Service":
 		return &KubernetesNoopRouter{}
