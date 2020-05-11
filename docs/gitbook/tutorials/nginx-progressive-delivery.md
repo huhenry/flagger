@@ -6,7 +6,7 @@ This guide shows you how to use the NGINX ingress controller and Flagger to auto
 
 ## Prerequisites
 
-Flagger requires a Kubernetes cluster **v1.11** or newer and NGINX ingress **0.24** or newer.
+Flagger requires a Kubernetes cluster **v1.14** or newer and NGINX ingress **0.24** or newer.
 
 Install NGINX with Helm v3:
 
@@ -14,7 +14,6 @@ Install NGINX with Helm v3:
 kubectl create ns ingress-nginx
 helm upgrade -i nginx-ingress stable/nginx-ingress \
 --namespace ingress-nginx \
---set controller.stats.enabled=true \
 --set controller.metrics.enabled=true \
 --set controller.podAnnotations."prometheus\.io/scrape"=true \
 --set controller.podAnnotations."prometheus\.io/port"=10254
@@ -70,7 +69,7 @@ helm upgrade -i flagger-loadtester flagger/loadtester \
 Create an ingress definition \(replace `app.example.com` with your own domain\):
 
 ```yaml
-apiVersion: extensions/v1beta1
+apiVersion: networking.k8s.io/v1beta1
 kind: Ingress
 metadata:
   name: podinfo
@@ -112,7 +111,7 @@ spec:
     name: podinfo
   # ingress reference
   ingressRef:
-    apiVersion: extensions/v1beta1
+    apiVersion: networking.k8s.io/v1beta1
     kind: Ingress
     name: podinfo
   # HPA reference (optional)

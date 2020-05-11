@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -17,10 +18,7 @@ import (
 func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogger, taskRunner *TaskRunner, gate *GateStorage, stopCh <-chan struct{}) {
 	mux := http.DefaultServeMux
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+	mux.HandleFunc("/healthz", HandleHealthz)
 	mux.HandleFunc("/gate/approve", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -187,7 +185,40 @@ func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogge
 		logger.Infof("%s rollback closed", canaryName)
 	})
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", HandleNewTask(logger, taskRunner))
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	// run server in background
+	go func() {
+		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			logger.Fatalf("HTTP server crashed %v", err)
+		}
+	}()
+
+	// wait for SIGTERM or SIGINT
+	<-stopCh
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Errorf("HTTP server graceful shutdown failed %v", err)
+	} else {
+		logger.Info("HTTP server stopped")
+	}
+}
+
+// HandleHealthz handles heath check requests
+func HandleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+// HandleNewTask handles task creation requests
+func HandleNewTask(logger *zap.SugaredLogger, taskRunner TaskRunnerInterface) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			logger.Error("reading the request body failed", zap.Error(err))
@@ -211,11 +242,16 @@ func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogge
 				typ = TaskTypeShell
 			}
 
-			// run bats command (blocking task)
-			if typ == TaskTypeBash {
-				logger.With("canary", payload.Name).Infof("bats command %s", payload.Metadata["cmd"])
+			rtnCmdOutput := false
+			if rtn, ok := metadata["returnCmdOutput"]; ok {
+				rtnCmdOutput, err = strconv.ParseBool(rtn)
+			}
 
-				bats := BashTask{
+			// run bash command (blocking task)
+			if typ == TaskTypeBash {
+				logger.With("canary", payload.Name).Infof("bash command %s", payload.Metadata["cmd"])
+
+				bashTask := BashTask{
 					command:      payload.Metadata["cmd"],
 					logCmdOutput: true,
 					TaskBase: TaskBase{
@@ -224,17 +260,20 @@ func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogge
 					},
 				}
 
-				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.timeout)
+				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.Timeout())
 				defer cancel()
 
-				ok, err := bats.Run(ctx)
-				if !ok {
+				result, err := bashTask.Run(ctx)
+				if !result.ok {
 					w.WriteHeader(http.StatusInternalServerError)
 					w.Write([]byte(err.Error()))
 					return
 				}
 
 				w.WriteHeader(http.StatusOK)
+				if rtnCmdOutput {
+					w.Write(result.out)
+				}
 				return
 			}
 
@@ -249,17 +288,20 @@ func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogge
 					},
 				}
 
-				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.timeout)
+				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.Timeout())
 				defer cancel()
 
-				ok, err := helm.Run(ctx)
-				if !ok {
+				result, err := helm.Run(ctx)
+				if !result.ok {
 					w.WriteHeader(http.StatusInternalServerError)
 					w.Write([]byte(err.Error()))
 					return
 				}
 
 				w.WriteHeader(http.StatusOK)
+				if rtnCmdOutput {
+					w.Write(result.out)
+				}
 				return
 			}
 
@@ -274,17 +316,51 @@ func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogge
 					},
 				}
 
-				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.timeout)
+				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.Timeout())
 				defer cancel()
 
-				ok, err := helm.Run(ctx)
-				if !ok {
+				result, err := helm.Run(ctx)
+				if !result.ok {
 					w.WriteHeader(http.StatusInternalServerError)
 					w.Write([]byte(err.Error()))
 					return
 				}
 
 				w.WriteHeader(http.StatusOK)
+				if rtnCmdOutput {
+					w.Write(result.out)
+				}
+				return
+			}
+
+			// run concord job (blocking task)
+			if typ == TaskTypeConcord {
+				concord, err := NewConcordTask(payload.Metadata, fmt.Sprintf("%s.%s", payload.Name, payload.Namespace), logger)
+
+				if err != nil {
+					logger.With("canary", payload.Name).Errorf("concord task init error: %s", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					w.Write([]byte(err.Error()))
+					return
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), taskRunner.Timeout())
+				defer cancel()
+
+				result, err := concord.Run(ctx)
+				if !result.ok {
+					if err != nil {
+						logger.With("canary", payload.Name).Errorf("concord task error: %s", err)
+					}
+					w.WriteHeader(http.StatusInternalServerError)
+					w.Write([]byte(err.Error()))
+					return
+				}
+
+				w.WriteHeader(http.StatusOK)
+				if rtnCmdOutput {
+					w.Write(result.out)
+				}
 				return
 			}
 
@@ -309,30 +385,5 @@ func ListenAndServe(port string, timeout time.Duration, logger *zap.SugaredLogge
 		}
 
 		w.WriteHeader(http.StatusAccepted)
-	})
-	srv := &http.Server{
-		Addr:         ":" + port,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 1 * time.Minute,
-		IdleTimeout:  15 * time.Second,
-	}
-
-	// run server in background
-	go func() {
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			logger.Fatalf("HTTP server crashed %v", err)
-		}
-	}()
-
-	// wait for SIGTERM or SIGINT
-	<-stopCh
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Errorf("HTTP server graceful shutdown failed %v", err)
-	} else {
-		logger.Info("HTTP server stopped")
 	}
 }

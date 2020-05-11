@@ -15,6 +15,8 @@ import (
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
 )
 
+const prometheusOnlineQuery = "vector(1)"
+
 // PrometheusProvider executes promQL queries
 type PrometheusProvider struct {
 	timeout  time.Duration
@@ -74,7 +76,7 @@ func (p *PrometheusProvider) RunQuery(query string) (float64, error) {
 	query = url.QueryEscape(p.trimQuery(query))
 	u, err := url.Parse(fmt.Sprintf("./api/v1/query?query=%s", query))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("url.Parase failed: %w", err)
 	}
 	u.Path = path.Join(p.url.Path, u.Path)
 
@@ -82,7 +84,7 @@ func (p *PrometheusProvider) RunQuery(query string) (float64, error) {
 
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("http.NewRequest failed: %w", err)
 	}
 
 	if p.username != "" && p.password != "" {
@@ -94,13 +96,13 @@ func (p *PrometheusProvider) RunQuery(query string) (float64, error) {
 
 	r, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("request failed: %w", err)
 	}
 	defer r.Body.Close()
 
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		return 0, fmt.Errorf("error reading body: %s", err.Error())
+		return 0, fmt.Errorf("error reading body: %w", err)
 	}
 
 	if 400 <= r.StatusCode {
@@ -110,7 +112,7 @@ func (p *PrometheusProvider) RunQuery(query string) (float64, error) {
 	var result prometheusResponse
 	err = json.Unmarshal(b, &result)
 	if err != nil {
-		return 0, fmt.Errorf("error unmarshaling result: %s, '%s'", err.Error(), string(b))
+		return 0, fmt.Errorf("error unmarshaling result: %w, '%s'", err, string(b))
 	}
 
 	var value *float64
@@ -126,47 +128,21 @@ func (p *PrometheusProvider) RunQuery(query string) (float64, error) {
 		}
 	}
 	if value == nil {
-		return 0, fmt.Errorf("no values found")
+		return 0, fmt.Errorf("%w", ErrNoValuesFound)
 	}
 
 	return *value, nil
 }
 
-// IsOnline calls the Prometheus status endpoint and returns an error if the API is unreachable
+// IsOnline run simple Prometheus query and returns an error if the API is unreachable
 func (p *PrometheusProvider) IsOnline() (bool, error) {
-	u, err := url.Parse("./api/v1/status/flags")
+	value, err := p.RunQuery(prometheusOnlineQuery)
 	if err != nil {
-		return false, err
-	}
-	u.Path = path.Join(p.url.Path, u.Path)
-
-	u = p.url.ResolveReference(u)
-
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return false, err
+		return false, fmt.Errorf("running query failed: %w", err)
 	}
 
-	if p.username != "" && p.password != "" {
-		req.SetBasicAuth(p.username, p.password)
-	}
-
-	ctx, cancel := context.WithTimeout(req.Context(), p.timeout)
-	defer cancel()
-
-	r, err := http.DefaultClient.Do(req.WithContext(ctx))
-	if err != nil {
-		return false, err
-	}
-	defer r.Body.Close()
-
-	b, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return false, fmt.Errorf("error reading body: %s", err.Error())
-	}
-
-	if 400 <= r.StatusCode {
-		return false, fmt.Errorf("error response: %s", string(b))
+	if value != float64(1) {
+		return false, fmt.Errorf("value is not 1 for query: %s", prometheusOnlineQuery)
 	}
 
 	return true, nil

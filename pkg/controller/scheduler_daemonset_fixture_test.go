@@ -24,6 +24,7 @@ import (
 	"github.com/weaveworks/flagger/pkg/logger"
 	"github.com/weaveworks/flagger/pkg/metrics"
 	"github.com/weaveworks/flagger/pkg/metrics/observers"
+	"github.com/weaveworks/flagger/pkg/notifier"
 	"github.com/weaveworks/flagger/pkg/router"
 )
 
@@ -90,7 +91,6 @@ func newDaemonSetFixture(c *flaggerv1.Canary) daemonSetFixture {
 
 	ctrl := &Controller{
 		kubeClient:       kubeClient,
-		istioClient:      flaggerClient,
 		flaggerClient:    flaggerClient,
 		flaggerInformers: fi,
 		flaggerSynced:    fi.CanaryInformer.Informer().HasSynced,
@@ -103,6 +103,7 @@ func newDaemonSetFixture(c *flaggerv1.Canary) daemonSetFixture {
 		observerFactory:  observerFactory,
 		recorder:         metrics.NewRecorder(controllerAgentName, false),
 		routerFactory:    rf,
+		notifier:         &notifier.NopNotifier{},
 	}
 	ctrl.flaggerSynced = alwaysReady
 	ctrl.flaggerInformers.CanaryInformer.Informer().GetIndexer().Add(c)
@@ -250,7 +251,7 @@ func newDaemonSetTestCanary() *flaggerv1.Canary {
 				Kind:       "DaemonSet",
 			}, Service: flaggerv1.CanaryService{
 				Port: 9898,
-			}, CanaryAnalysis: &flaggerv1.CanaryAnalysis{
+			}, Analysis: &flaggerv1.CanaryAnalysis{
 				Threshold:  10,
 				StepWeight: 10,
 				MaxWeight:  50,
@@ -289,7 +290,7 @@ func newDaemonSetTestCanary() *flaggerv1.Canary {
 
 func newDaemonSetTestCanaryMirror() *flaggerv1.Canary {
 	cd := newDaemonSetTestCanary()
-	cd.Spec.CanaryAnalysis.Mirror = true
+	cd.Spec.Analysis.Mirror = true
 	return cd
 }
 
@@ -307,7 +308,7 @@ func newDaemonSetTestCanaryAB() *flaggerv1.Canary {
 				Kind:       "DaemonSet",
 			}, Service: flaggerv1.CanaryService{
 				Port: 9898,
-			}, CanaryAnalysis: &flaggerv1.CanaryAnalysis{
+			}, Analysis: &flaggerv1.CanaryAnalysis{
 				Threshold:  10,
 				Iterations: 10,
 				Match: []istiov1alpha3.HTTPMatchRequest{
@@ -596,32 +597,6 @@ func newDaemonSetTestService() *corev1.Service {
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
 				"app": "podinfo",
-			},
-			Type: corev1.ServiceTypeClusterIP,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "http",
-					Port:       9898,
-					Protocol:   corev1.ProtocolTCP,
-					TargetPort: intstr.FromString("http"),
-				},
-			},
-		},
-	}
-
-	return d
-}
-
-func newDaemonSetTestServiceV2() *corev1.Service {
-	d := &corev1.Service{
-		TypeMeta: metav1.TypeMeta{APIVersion: appsv1.SchemeGroupVersion.String()},
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "default",
-			Name:      "podinfo",
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-				"app": "podinfo-v2",
 			},
 			Type: corev1.ServiceTypeClusterIP,
 			Ports: []corev1.ServicePort{

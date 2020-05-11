@@ -499,8 +499,47 @@ spec:
                             format: string
                             type: string
                           type: array
+                apex:
+                  description: Metadata to add to the apex service
+                  type: object
+                  properties:
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                primary:
+                  description: Metadata to add to the primary service
+                  type: object
+                  properties:
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                canary:
+                  description: Metadata to add to the canary service
+                  type: object
+                  properties:
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
             skipAnalysis:
               description: Skip analysis and promote canary
+              type: boolean
+            revertOnDeletion:
+              description: Revert mutated resources to original spec on deletion
               type: boolean
             analysis:
               description: Canary analysis for this canary
@@ -528,6 +567,9 @@ spec:
                 mirror:
                   description: Mirror traffic to canary
                   type: boolean
+                mirrorWeight:
+                  description: Percentage of traffic to be mirrored
+                  type: number
                 match:
                   description: A/B testing match conditions
                   type: array
@@ -647,6 +689,8 @@ spec:
                 - Finalising
                 - Succeeded
                 - Failed
+                - Terminating
+                - Terminated
             canaryWeight:
               description: Traffic weight percentage routed to canary
               type: number

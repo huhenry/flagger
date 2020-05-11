@@ -94,6 +94,10 @@ type CanarySpec struct {
 	// SkipAnalysis promotes the canary without analysing it
 	// +optional
 	SkipAnalysis bool `json:"skipAnalysis,omitempty"`
+
+	// revert canary mutation on deletion of canary resource
+	// +optional
+	RevertOnDeletion bool `json:"revertOnDeletion,omitempty"`
 }
 
 // CanaryService defines how ClusterIP services, service mesh or ingress routing objects are generated
@@ -164,6 +168,18 @@ type CanaryService struct {
 	// Backends of the generated App Mesh virtual nodes
 	// +optional
 	Backends []string `json:"backends,omitempty"`
+
+	// Apex is metadata to add to the apex service
+	// +optional
+	Apex *CustomMetadata `json:"apex,omitempty"`
+
+	// Primary is the metadata to add to the primary service
+	// +optional
+	Primary *CustomMetadata `json:"primary,omitempty"`
+
+	// Canary is the metadata to add to the canary service
+	// +optional
+	Canary *CustomMetadata `json:"canary,omitempty"`
 }
 
 // CanaryAnalysis is used to describe how the analysis should be done
@@ -175,9 +191,13 @@ type CanaryAnalysis struct {
 	// +optional
 	Iterations int `json:"iterations,omitempty"`
 
-	//Enable traffic mirroring for Blue/Green
+	// Enable traffic mirroring for Blue/Green
 	// +optional
 	Mirror bool `json:"mirror,omitempty"`
+
+	// Percentage of the traffic to be mirrored in the range of [0, 100].
+	// +optional
+	MirrorWeight int `json:"mirrorWeight,omitempty"`
 
 	// Max traffic percentage routed to canary
 	// +optional
@@ -214,14 +234,14 @@ type CanaryMetric struct {
 	// Interval represents the windows size
 	Interval string `json:"interval,omitempty"`
 
-	// Max value accepted for this metric
+	// Deprecated: Max value accepted for this metric (replaced by ThresholdRange)
 	Threshold float64 `json:"threshold"`
 
 	// Range value accepted for this metric
 	// +optional
 	ThresholdRange *CanaryThresholdRange `json:"thresholdRange,omitempty"`
 
-	// Prometheus query for this metric (deprecated in favor of TemplateRef)
+	// Deprecated: Prometheus query for this metric (replaced by TemplateRef)
 	// +optional
 	Query string `json:"query,omitempty"`
 
@@ -294,7 +314,7 @@ type CanaryWebhook struct {
 	URL string `json:"url"`
 
 	// Request timeout for this webhook
-	Timeout string `json:"timeout"`
+	Timeout string `json:"timeout,omitempty"`
 
 	// Metadata (key-value pairs) for this webhook
 	// +optional
@@ -333,6 +353,12 @@ type CrossNamespaceObjectReference struct {
 	// Namespace of the referent
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+}
+
+// CustomMetadata holds labels and annotations to set on generated objects.
+type CustomMetadata struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // GetServiceNames returns the apex, primary and canary Kubernetes service names

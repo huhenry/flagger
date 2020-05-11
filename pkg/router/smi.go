@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -52,7 +53,7 @@ func (sr *SmiRouter) Reconcile(canary *flaggerv1.Canary) error {
 		},
 	}
 
-	ts, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	ts, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	// create traffic split
 	if errors.IsNotFound(err) {
 		t := &smiv1alpha1.TrafficSplit{
@@ -71,18 +72,16 @@ func (sr *SmiRouter) Reconcile(canary *flaggerv1.Canary) error {
 			Spec: tsSpec,
 		}
 
-		_, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Create(t)
+		_, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Create(context.TODO(), t, metav1.CreateOptions{})
 		if err != nil {
-			return err
+			return fmt.Errorf("TrafficSplit %s.%s create error: %w", apexName, canary.Namespace, err)
 		}
 
 		sr.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 			Infof("TrafficSplit %s.%s created", t.GetName(), canary.Namespace)
 		return nil
-	}
-
-	if err != nil {
-		return fmt.Errorf("traffic split %s query error %v", apexName, err)
+	} else if err != nil {
+		return fmt.Errorf("TrafficSplit %s.%s get query error: %w", apexName, canary.Namespace, err)
 	}
 
 	// update traffic split
@@ -90,9 +89,9 @@ func (sr *SmiRouter) Reconcile(canary *flaggerv1.Canary) error {
 		tsClone := ts.DeepCopy()
 		tsClone.Spec = tsSpec
 
-		_, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Update(tsClone)
+		_, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Update(context.TODO(), tsClone, metav1.UpdateOptions{})
 		if err != nil {
-			return fmt.Errorf("TrafficSplit %s update error %v", apexName, err)
+			return fmt.Errorf("TrafficSplit %s.%s update error: %w", apexName, canary.Namespace, err)
 		}
 
 		sr.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
@@ -111,13 +110,9 @@ func (sr *SmiRouter) GetRoutes(canary *flaggerv1.Canary) (
 	err error,
 ) {
 	apexName, primaryName, canaryName := canary.GetServiceNames()
-	ts, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	ts, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			err = fmt.Errorf("TrafficSplit %s.%s not found", apexName, canary.Namespace)
-			return
-		}
-		err = fmt.Errorf("TrafficSplit %s.%s query error %v", apexName, canary.Namespace, err)
+		err = fmt.Errorf("TrafficSplit %s.%s get query error %v", apexName, canary.Namespace, err)
 		return
 	}
 
@@ -146,16 +141,12 @@ func (sr *SmiRouter) SetRoutes(
 	canary *flaggerv1.Canary,
 	primaryWeight int,
 	canaryWeight int,
-	mirrored bool,
+	_ bool,
 ) error {
 	apexName, primaryName, canaryName := canary.GetServiceNames()
-	ts, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	ts, err := sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("TrafficSplit %s.%s not found", apexName, canary.Namespace)
-
-		}
-		return fmt.Errorf("TrafficSplit %s.%s query error %v", apexName, canary.Namespace, err)
+		return fmt.Errorf("TrafficSplit %s.%s get query error %v", apexName, canary.Namespace, err)
 	}
 
 	backends := []smiv1alpha1.TrafficSplitBackend{
@@ -172,9 +163,9 @@ func (sr *SmiRouter) SetRoutes(
 	tsClone := ts.DeepCopy()
 	tsClone.Spec.Backends = backends
 
-	_, err = sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Update(tsClone)
+	_, err = sr.smiClient.SplitV1alpha1().TrafficSplits(canary.Namespace).Update(context.TODO(), tsClone, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("TrafficSplit %s update error %v", apexName, err)
+		return fmt.Errorf("TrafficSplit %s.%s update error %v", apexName, canary.Namespace, err)
 	}
 
 	return nil
@@ -192,7 +183,7 @@ func (sr *SmiRouter) makeAnnotations(gateways []string) map[string]string {
 // getWithConvert overrides invalid traffic split and sets weight based on the canary status
 func (sr *SmiRouter) getWithConvert(canary *flaggerv1.Canary, host string) (*smiv1alpha2.TrafficSplit, error) {
 	apexName, primaryName, canaryName := canary.GetServiceNames()
-	ts, err := sr.smiClient.SplitV1alpha2().TrafficSplits(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	ts, err := sr.smiClient.SplitV1alpha2().TrafficSplits(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if errors.IsInvalid(err) {
 		t := &smiv1alpha2.TrafficSplit{
 			ObjectMeta: metav1.ObjectMeta{
@@ -222,13 +213,19 @@ func (sr *SmiRouter) getWithConvert(canary *flaggerv1.Canary, host string) (*smi
 			},
 		}
 
-		_, err := sr.smiClient.SplitV1alpha2().TrafficSplits(canary.Namespace).Update(t)
+		_, err := sr.smiClient.SplitV1alpha2().TrafficSplits(canary.Namespace).Update(context.TODO(), t, metav1.UpdateOptions{})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("TrafficSplit %s.%s update error: %w", apexName, canary.Namespace, err)
 		}
 
 		sr.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 			Infof("TrafficSplit %s.%s converted", t.GetName(), canary.Namespace)
+	} else if err != nil {
+		return nil, fmt.Errorf("TrafficSplit %s.%s get query error %v", apexName, canary.Namespace, err)
 	}
-	return ts, err
+	return ts, nil
+}
+
+func (sr *SmiRouter) Finalize(_ *flaggerv1.Canary) error {
+	return nil
 }

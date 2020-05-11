@@ -1,56 +1,75 @@
 package observers
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
 	"github.com/weaveworks/flagger/pkg/metrics/providers"
 )
 
 func TestNginxObserver_GetRequestSuccessRate(t *testing.T) {
-	expected := ` sum( rate( nginx_ingress_controller_requests{ namespace="nginx", ingress="podinfo", status!~"5.*" }[1m] ) ) / sum( rate( nginx_ingress_controller_requests{ namespace="nginx", ingress="podinfo" }[1m] ) ) * 100`
+	t.Run("ok", func(t *testing.T) {
+		expected := ` sum( rate( nginx_ingress_controller_requests{ namespace="nginx", ingress="podinfo", status!~"5.*" }[1m] ) ) / sum( rate( nginx_ingress_controller_requests{ namespace="nginx", ingress="podinfo" }[1m] ) ) * 100`
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			promql := r.URL.Query()["query"][0]
+			assert.Equal(t, expected, promql)
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		promql := r.URL.Query()["query"][0]
-		if promql != expected {
-			t.Errorf("\nGot %s \nWanted %s", promql, expected)
+			json := `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"100"]}]}}`
+			w.Write([]byte(json))
+		}))
+		defer ts.Close()
+
+		client, err := providers.NewPrometheusProvider(flaggerv1.MetricTemplateProvider{
+			Type:      "prometheus",
+			Address:   ts.URL,
+			SecretRef: nil,
+		}, nil)
+		require.NoError(t, err)
+
+		observer := &NginxObserver{
+			client: client,
 		}
 
-		json := `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"100"]}]}}`
-		w.Write([]byte(json))
-	}))
-	defer ts.Close()
+		val, err := observer.GetRequestSuccessRate(flaggerv1.MetricTemplateModel{
+			Name:      "podinfo",
+			Namespace: "nginx",
+			Target:    "podinfo",
+			Ingress:   "podinfo",
+			Interval:  "1m",
+		})
+		require.NoError(t, err)
 
-	client, err := providers.NewPrometheusProvider(flaggerv1.MetricTemplateProvider{
-		Type:      "prometheus",
-		Address:   ts.URL,
-		SecretRef: nil,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	observer := &NginxObserver{
-		client: client,
-	}
-
-	val, err := observer.GetRequestSuccessRate(flaggerv1.MetricTemplateModel{
-		Name:      "podinfo",
-		Namespace: "nginx",
-		Target:    "podinfo",
-		Ingress:   "podinfo",
-		Interval:  "1m",
+		assert.Equal(t, float64(100), val)
 	})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
 
-	if val != 100 {
-		t.Errorf("Got %v wanted %v", val, 100)
-	}
+	t.Run("no values", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json := `{"status":"success","data":{"resultType":"vector","result":[]}}`
+			w.Write([]byte(json))
+		}))
+		defer ts.Close()
+
+		client, err := providers.NewPrometheusProvider(flaggerv1.MetricTemplateProvider{
+			Type:      "prometheus",
+			Address:   ts.URL,
+			SecretRef: nil,
+		}, nil)
+		require.NoError(t, err)
+
+		observer := &NginxObserver{
+			client: client,
+		}
+
+		_, err = observer.GetRequestSuccessRate(flaggerv1.MetricTemplateModel{})
+		require.True(t, errors.Is(err, providers.ErrNoValuesFound))
+	})
 }
 
 func TestNginxObserver_GetRequestDuration(t *testing.T) {
@@ -58,9 +77,7 @@ func TestNginxObserver_GetRequestDuration(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		promql := r.URL.Query()["query"][0]
-		if promql != expected {
-			t.Errorf("\nGot %s \nWanted %s", promql, expected)
-		}
+		assert.Equal(t, expected, promql)
 
 		json := `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"100"]}]}}`
 		w.Write([]byte(json))
@@ -72,9 +89,7 @@ func TestNginxObserver_GetRequestDuration(t *testing.T) {
 		Address:   ts.URL,
 		SecretRef: nil,
 	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	observer := &NginxObserver{
 		client: client,
@@ -87,11 +102,7 @@ func TestNginxObserver_GetRequestDuration(t *testing.T) {
 		Ingress:   "podinfo",
 		Interval:  "1m",
 	})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
-	if val != 100*time.Millisecond {
-		t.Errorf("Got %v wanted %v", val, 100*time.Millisecond)
-	}
+	assert.Equal(t, 100*time.Millisecond, val)
 }

@@ -3,7 +3,7 @@
 [Flagger](https://github.com/weaveworks/flagger) can be configured to automate the release process 
 for Kubernetes workloads with a custom resource named canary.
 
-### Canary custom resource
+### Canary resource
 
 The canary custom resource defines the release process of an application running on Kubernetes
 and is portable across clusters, service meshes and ingress providers.
@@ -131,7 +131,7 @@ spec:
 The container port from the target workload should match the `service.port` or `service.targetPort`.
 The `service.name` is optional, defaults to `spec.targetRef.name`.
 The `service.targetPort` can be a container port number or name.
-The `service.portName` is optional (defaults to `http`), if your workload uses gPRC then set the port name to `grcp`.
+The `service.portName` is optional (defaults to `http`), if your workload uses gRPC then set the port name to `grpc`.
 
 If port discovery is enabled, Flagger scans the target workload and extracts the containers 
 ports excluding the port specified in the canary service and service mesh sidecar ports. 
@@ -239,6 +239,32 @@ kubectl wait canary/podinfo --for=condition=promoted --timeout=5m
 # check if the deployment was successful 
 kubectl get canary/podinfo | grep Succeeded
 ```
+
+### Canary finalizers
+
+The default behavior of Flagger on canary deletion is to leave resources that aren't owned by the controller 
+in their current state.  This simplifies the deletion action and avoids possible deadlocks during resource 
+finalization.  In the event the canary was introduced with existing resource(s) (i.e. service, virtual service, etc.),
+they would be mutated during the initialization phase and no longer reflect their initial state.  If the desired
+functionality upon deletion is to revert the resources to their initial state, the `revertOnDeletion` attribute
+can be enabled.  
+
+```yaml
+spec:
+  revertOnDeletion: true
+```
+
+When a deletion action is submitted to the cluster, Flagger will attempt to revert the following resources:
+
+* [Canary target](#canary-target) replicas will be updated to the primary replica count
+* [Canary service](#canary-service) selector will be reverted
+* Mesh/Ingress traffic routed to the target   
+
+The recommended approach to disable canary analysis would be utilization of the `skipAnalysis`
+attribute, which limits the need for resource reconciliation.  Utilizing the `revertOnDeletion` attribute should be 
+enabled when you no longer plan to rely on Flagger for deployment management.
+
+**Note** When this feature is enabled expect a delay in the delete action due to the reconciliation.  
 
 ### Canary analysis
 

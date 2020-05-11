@@ -2,9 +2,12 @@
 
 image:
   repository: weaveworks/flagger
-  tag: 0.23.0
+  tag: 1.0.0-rc.4
   pullPolicy: IfNotPresent
   pullSecret:
+
+# accepted values are debug, info, warning, error (defaults to info)
+logLevel: info
 
 podAnnotations:
   prometheus.io/scrape: "true"
@@ -26,6 +29,14 @@ selectorLabels: ""
 # when enabled, flagger will track changes in Secrets and ConfigMaps referenced in the target deployment (enabled by default)
 configTracking:
   enabled: true
+
+# when enabled, it will add a security context for the flagger pod. You may
+# need to disable this if you are running flagger on OpenShift
+securityContext:
+  enabled: true
+  context:
+    readOnlyRootFilesystem: true
+    runAsUser: 10001
 
 # when specified, flagger will publish events to the provided webhook
 eventWebhook: ""
@@ -73,6 +84,8 @@ serviceAccount:
   create: true
   # serviceAccount.name: The name of the service account to create or use
   name: ""
+  # serviceAccount.annotations: Annotations for service account
+  annotations: {}
 
 rbac:
   # rbac.create: `true` if rbac resources should be created
@@ -102,6 +115,7 @@ tolerations: []
 prometheus:
   # to be used with ingress controllers
   install: false
+  image: docker.io/prom/prometheus:v2.17.1
 
 #  Istio multi-cluster service mesh (shared control plane single-network)
 # https://istio.io/docs/setup/install/multicluster/shared-vpn/

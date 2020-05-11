@@ -30,13 +30,13 @@ Spec:
       - name: "start gate"
         type: confirm-rollout
         url: http://flagger-loadtester.test/gate/approve
-      - name: "smoke test"
+      - name: "helm test"
         type: pre-rollout
-        url: http://flagger-helmtester.kube-system/
+        url: http://flagger-helmtester.flagger/
         timeout: 3m
         metadata:
-          type: "helm"
-          cmd: "test podinfo --cleanup"
+          type: "helmv3"
+          cmd: "test podinfo -n test"
       - name: "load test"
         type: rollout
         url: http://flagger-loadtester.test/
@@ -116,10 +116,7 @@ that generates traffic during analysis when configured as a webhook.
 First you need to deploy the load test runner in a namespace with sidecar injection enabled:
 
 ```bash
-export REPO=https://raw.githubusercontent.com/weaveworks/flagger/master
-
-kubectl -n test apply -f ${REPO}/artifacts/loadtester/deployment.yaml
-kubectl -n test apply -f ${REPO}/artifacts/loadtester/service.yaml
+kubectl apply -k github.com/weaveworks/flagger//kustomize/tester
 ```
 
 Or by using Helm:
@@ -169,7 +166,7 @@ webhooks:
       cmd: "hey -z 1m -q 10 -c 2 -h2 https://podinfo.example.com/"
 ```
 
-For gRPC services you can use [bojand/ghz](https://github.com/bojand/ghz) which is a similar tool to Hey but for gPRC:
+For gRPC services you can use [bojand/ghz](https://github.com/bojand/ghz) which is a similar tool to Hey but for gRPC:
 
 ```yaml
 webhooks:
@@ -234,7 +231,7 @@ for the status of the test, and prevent duplicate requests from being sent in su
 
 ### Integration Testing
 
-Flagger comes with a testing service that can run Helm tests or Bats tests when configured as a webhook.
+Flagger comes with a testing service that can run Helm tests, Bats tests or Concord tests when configured as a webhook.
 
 Deploy the Helm test runner in the `kube-system` namespace using the `tiller` service account:
 
@@ -276,7 +273,7 @@ If you are using Helm v3, you'll have to create a dedicated service account and 
         timeout: 3m
         metadata:
           type: "helmv3"
-          cmd: "test run {{ .Release.Name }} --timeout 3m -n {{ .Release.Namespace }}"
+          cmd: "test {{ .Release.Name }} --timeout 3m -n {{ .Release.Namespace }}"
 ```
 
 As an alternative to Helm you can use the [Bash Automated Testing System](https://github.com/bats-core/bats-core) to run your tests. 
@@ -294,6 +291,33 @@ As an alternative to Helm you can use the [Bash Automated Testing System](https:
 ```
 
 Note that you should create a ConfigMap with your Bats tests and mount it inside the tester container.
+
+You can also configure the test runner to start a [Concord](https://concord.walmartlabs.com/) process.
+
+```yaml
+  analysis:
+    webhooks:
+      - name: "concord integration test"
+        type: pre-rollout
+        url: http://flagger-concordtester.default/
+        timeout: 60s
+        metadata:
+          type: "concord"
+          org: "your-concord-org"
+          project: "your-concord-project"
+          repo: "your-concord-repo"
+          entrypoint: "your-concord-entrypoint"
+          apiKeyPath: "/tmp/concord-api-key"
+          endpoint: "https://canary-endpoint/"
+          pollInterval: "5"
+          pollTimeout: "60"
+```
+
+`org`, `project`, `repo` and `entrypoint` represents where your test process runs in Concord. 
+In order to authenticate to Concord, you need to set `apiKeyPath` to a path of a file containing a valid Concord API key
+ on the `flagger-helmtester` container. This can be done via mounting a Kubernetes secret in the tester's Deployment. 
+`pollInterval` represents the interval in seconds the web-hook will call Concord to see if the process has finished (Default is 5s). 
+`pollTimeout` represents the time in seconds the web-hook will try to call Concord before timing out (Default is 30s). 
 
 ### Manual Gating
 

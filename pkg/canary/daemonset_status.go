@@ -1,10 +1,9 @@
 package canary
 
 import (
+	"context"
 	"fmt"
 
-	ex "github.com/pkg/errors"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
@@ -12,12 +11,9 @@ import (
 
 // SyncStatus encodes the canary pod spec and updates the canary status
 func (c *DaemonSetController) SyncStatus(cd *flaggerv1.Canary, status flaggerv1.CanaryStatus) error {
-	dae, err := c.kubeClient.AppsV1().DaemonSets(cd.Namespace).Get(cd.Spec.TargetRef.Name, metav1.GetOptions{})
+	dae, err := c.kubeClient.AppsV1().DaemonSets(cd.Namespace).Get(context.TODO(), cd.Spec.TargetRef.Name, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("daemonset %s.%s not found", cd.Spec.TargetRef.Name, cd.Namespace)
-		}
-		return ex.Wrap(err, "SyncStatus daemonset query error")
+		return fmt.Errorf("daemonset %s.%s get query error: %w", cd.Spec.TargetRef.Name, cd.Namespace, err)
 	}
 
 	// ignore `daemonSetScaleDownNodeSelector` node selector
@@ -32,7 +28,7 @@ func (c *DaemonSetController) SyncStatus(cd *flaggerv1.Canary, status flaggerv1.
 
 	configs, err := c.configTracker.GetConfigRefs(cd)
 	if err != nil {
-		return ex.Wrap(err, "SyncStatus configs query error")
+		return fmt.Errorf("GetConfigRefs failed: %w", err)
 	}
 
 	return syncCanaryStatus(c.flaggerClient, cd, status, dae.Spec.Template, func(cdCopy *flaggerv1.Canary) {

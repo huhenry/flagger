@@ -1,8 +1,10 @@
 package canary
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -11,69 +13,68 @@ import (
 
 func TestDaemonSetController_IsReady(t *testing.T) {
 	mocks := newDaemonSetFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Error("Expected primary readiness check to fail")
-	}
+	err := mocks.controller.Initialize(mocks.canary)
+	require.NoError(t, err)
 
-	_, err = mocks.controller.IsPrimaryReady(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	err = mocks.controller.IsPrimaryReady(mocks.canary)
+	require.NoError(t, err)
 
 	_, err = mocks.controller.IsCanaryReady(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 }
 
 func TestDaemonSetController_isDaemonSetReady(t *testing.T) {
-	ds := &appsv1.DaemonSet{
-		Status: appsv1.DaemonSetStatus{
-			DesiredNumberScheduled: 1,
-			UpdatedNumberScheduled: 1,
-		},
-	}
-
-	cd := &flaggerv1.Canary{}
-	cd.Spec.ProgressDeadlineSeconds = int32p(1e5)
-	cd.Status.LastTransitionTime = metav1.Now()
-
-	// ready
 	mocks := newDaemonSetFixture()
-	_, err := mocks.controller.isDaemonSetReady(cd, ds)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	cd := &flaggerv1.Canary{}
 
-	// not ready but retriable
-	ds.Status.NumberUnavailable++
-	retrieable, err := mocks.controller.isDaemonSetReady(cd, ds)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !retrieable {
-		t.Fatal("expected retriable")
-	}
-	ds.Status.NumberUnavailable--
+	// observed generation is less than desired generation
+	ds := &appsv1.DaemonSet{Status: appsv1.DaemonSetStatus{}}
+	ds.Status.ObservedGeneration--
+	retryable, err := mocks.controller.isDaemonSetReady(cd, ds)
+	require.Error(t, err)
+	require.True(t, retryable)
 
-	ds.Status.DesiredNumberScheduled++
-	retrieable, err = mocks.controller.isDaemonSetReady(cd, ds)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !retrieable {
-		t.Fatal("expected retriable")
-	}
+	// succeeded
+	ds = &appsv1.DaemonSet{Status: appsv1.DaemonSetStatus{
+		UpdatedNumberScheduled: 1,
+		DesiredNumberScheduled: 1,
+		NumberAvailable:        1,
+	}}
+	retryable, err = mocks.controller.isDaemonSetReady(cd, ds)
+	require.NoError(t, err)
+	require.True(t, retryable)
 
-	// not ready and not retriable
+	// deadline exceeded
+	ds = &appsv1.DaemonSet{Status: appsv1.DaemonSetStatus{
+		UpdatedNumberScheduled: 0,
+		DesiredNumberScheduled: 1,
+	}}
 	cd.Status.LastTransitionTime = metav1.Now()
-	cd.Spec.ProgressDeadlineSeconds = int32p(-1e5)
-	retrieable, err = mocks.controller.isDaemonSetReady(cd, ds)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if retrieable {
-		t.Fatal("expected not retriable")
-	}
+	cd.Spec.ProgressDeadlineSeconds = int32p(-1e6)
+	retryable, err = mocks.controller.isDaemonSetReady(cd, ds)
+	require.Error(t, err)
+	require.False(t, retryable)
+
+	// only newCond not satisfied
+	ds = &appsv1.DaemonSet{Status: appsv1.DaemonSetStatus{
+		UpdatedNumberScheduled: 0,
+		DesiredNumberScheduled: 1,
+		NumberAvailable:        1,
+	}}
+	cd.Spec.ProgressDeadlineSeconds = int32p(1e6)
+	retryable, err = mocks.controller.isDaemonSetReady(cd, ds)
+	require.Error(t, err)
+	require.True(t, retryable)
+	require.True(t, strings.Contains(err.Error(), "new pods"))
+
+	// only availableCond not satisfied
+	ds = &appsv1.DaemonSet{Status: appsv1.DaemonSetStatus{
+		UpdatedNumberScheduled: 1,
+		DesiredNumberScheduled: 1,
+		NumberAvailable:        0,
+	}}
+	retryable, err = mocks.controller.isDaemonSetReady(cd, ds)
+	require.Error(t, err)
+	require.True(t, retryable)
+	require.True(t, strings.Contains(err.Error(), "available"))
 }

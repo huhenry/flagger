@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Masterminds/semver/v3"
+	semver "github.com/Masterminds/semver/v3"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -125,6 +125,9 @@ func main() {
 	}
 
 	// use a remote cluster for routing if a service mesh kubeconfig is specified
+	if kubeconfigServiceMesh == "" {
+		kubeconfigServiceMesh = kubeconfig
+	}
 	cfgHost, err := clientcmd.BuildConfigFromFlags(masterURL, kubeconfigServiceMesh)
 	if err != nil {
 		logger.Fatalf("Error building host kubeconfig: %v", err)
@@ -183,7 +186,6 @@ func main() {
 
 	c := controller.NewController(
 		kubeClient,
-		meshClient,
 		flaggerClient,
 		infos,
 		controlLoopInterval,
@@ -316,37 +318,35 @@ func initNotifier(logger *zap.SugaredLogger) (client notifier.Interface) {
 	}
 	notifierFactory := notifier.NewFactory(notifierURL, slackUser, slackChannel)
 
-	if notifierURL != "" {
-		var err error
-		client, err = notifierFactory.Notifier(provider)
-		if err != nil {
-			logger.Errorf("Notifier %v", err)
-		} else {
-			logger.Infof("Notifications enabled for %s", notifierURL[0:30])
-		}
+	var err error
+	client, err = notifierFactory.Notifier(provider)
+	if err != nil {
+		logger.Errorf("Notifier %v", err)
+	} else if len(notifierURL) > 30 {
+		logger.Infof("Notifications enabled for %s", notifierURL[0:30])
 	}
 	return
 }
 
 func fromEnv(envVar string, defaultVal string) string {
-	if os.Getenv(envVar) != "" {
-		return os.Getenv(envVar)
+	if v := os.Getenv(envVar); v != "" {
+		return v
 	}
 	return defaultVal
 }
 
 func verifyCRDs(flaggerClient clientset.Interface, logger *zap.SugaredLogger) {
-	_, err := flaggerClient.FlaggerV1beta1().Canaries(namespace).List(metav1.ListOptions{Limit: 1})
+	_, err := flaggerClient.FlaggerV1beta1().Canaries(namespace).List(context.TODO(), metav1.ListOptions{Limit: 1})
 	if err != nil {
 		logger.Fatalf("Canary CRD is not registered %v", err)
 	}
 
-	_, err = flaggerClient.FlaggerV1beta1().MetricTemplates(namespace).List(metav1.ListOptions{Limit: 1})
+	_, err = flaggerClient.FlaggerV1beta1().MetricTemplates(namespace).List(context.TODO(), metav1.ListOptions{Limit: 1})
 	if err != nil {
 		logger.Fatalf("MetricTemplate CRD is not registered %v", err)
 	}
 
-	_, err = flaggerClient.FlaggerV1beta1().AlertProviders(namespace).List(metav1.ListOptions{Limit: 1})
+	_, err = flaggerClient.FlaggerV1beta1().AlertProviders(namespace).List(context.TODO(), metav1.ListOptions{Limit: 1})
 	if err != nil {
 		logger.Fatalf("AlertProvider CRD is not registered %v", err)
 	}

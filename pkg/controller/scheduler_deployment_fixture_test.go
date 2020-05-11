@@ -1,9 +1,13 @@
 package controller
 
 import (
+	"context"
+	"fmt"
 	"sync"
+	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
 	hpav2 "k8s.io/api/autoscaling/v2beta1"
@@ -25,6 +29,7 @@ import (
 	"github.com/weaveworks/flagger/pkg/logger"
 	"github.com/weaveworks/flagger/pkg/metrics"
 	"github.com/weaveworks/flagger/pkg/metrics/observers"
+	"github.com/weaveworks/flagger/pkg/notifier"
 	"github.com/weaveworks/flagger/pkg/router"
 )
 
@@ -37,6 +42,28 @@ type fixture struct {
 	ctrl          *Controller
 	logger        *zap.SugaredLogger
 	router        router.Interface
+}
+
+func (f fixture) makePrimaryReady(t *testing.T) {
+	primaryName := fmt.Sprintf("%s-primary", f.canary.Spec.TargetRef.Name)
+	f.makeReady(t, primaryName)
+}
+
+func (f fixture) makeCanaryReady(t *testing.T) {
+	f.makeReady(t, f.canary.Spec.TargetRef.Name)
+}
+
+func (f fixture) makeReady(t *testing.T, name string) {
+	p, err := f.kubeClient.AppsV1().
+		Deployments("default").
+		Get(context.TODO(), name, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	p.Status = appsv1.DeploymentStatus{Replicas: 1, UpdatedReplicas: 1,
+		ReadyReplicas: 1, AvailableReplicas: 1}
+
+	_, err = f.kubeClient.AppsV1().Deployments("default").Update(context.TODO(), p, metav1.UpdateOptions{})
+	require.NoError(t, err)
 }
 
 func newDeploymentFixture(c *flaggerv1.Canary) fixture {
@@ -92,7 +119,6 @@ func newDeploymentFixture(c *flaggerv1.Canary) fixture {
 
 	ctrl := &Controller{
 		kubeClient:       kubeClient,
-		istioClient:      flaggerClient,
 		flaggerClient:    flaggerClient,
 		flaggerInformers: fi,
 		flaggerSynced:    fi.CanaryInformer.Informer().HasSynced,
@@ -105,6 +131,7 @@ func newDeploymentFixture(c *flaggerv1.Canary) fixture {
 		observerFactory:  observerFactory,
 		recorder:         metrics.NewRecorder(controllerAgentName, false),
 		routerFactory:    rf,
+		notifier:         &notifier.NopNotifier{},
 	}
 	ctrl.flaggerSynced = alwaysReady
 	ctrl.flaggerInformers.CanaryInformer.Informer().GetIndexer().Add(c)
@@ -257,7 +284,7 @@ func newDeploymentTestCanary() *flaggerv1.Canary {
 				Kind:       "HorizontalPodAutoscaler",
 			}, Service: flaggerv1.CanaryService{
 				Port: 9898,
-			}, CanaryAnalysis: &flaggerv1.CanaryAnalysis{
+			}, Analysis: &flaggerv1.CanaryAnalysis{
 				Threshold:  10,
 				StepWeight: 10,
 				MaxWeight:  50,
@@ -296,7 +323,7 @@ func newDeploymentTestCanary() *flaggerv1.Canary {
 
 func newDeploymentTestCanaryMirror() *flaggerv1.Canary {
 	cd := newDeploymentTestCanary()
-	cd.Spec.CanaryAnalysis.Mirror = true
+	cd.Spec.Analysis.Mirror = true
 	return cd
 }
 
@@ -319,7 +346,7 @@ func newDeploymentTestCanaryAB() *flaggerv1.Canary {
 				Kind:       "HorizontalPodAutoscaler",
 			}, Service: flaggerv1.CanaryService{
 				Port: 9898,
-			}, CanaryAnalysis: &flaggerv1.CanaryAnalysis{
+			}, Analysis: &flaggerv1.CanaryAnalysis{
 				Threshold:  10,
 				Iterations: 10,
 				Match: []istiov1alpha3.HTTPMatchRequest{

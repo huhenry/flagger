@@ -1,16 +1,14 @@
 package controller
 
 import (
+	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
 	"github.com/weaveworks/flagger/pkg/canary"
-	"github.com/weaveworks/flagger/pkg/metrics/observers"
-	"github.com/weaveworks/flagger/pkg/metrics/providers"
 	"github.com/weaveworks/flagger/pkg/router"
 )
 
@@ -26,26 +24,26 @@ func (c *Controller) scheduleCanaries() {
 	stats := make(map[string]int)
 
 	c.canaries.Range(func(key interface{}, value interface{}) bool {
-		canary := value.(*flaggerv1.Canary)
+		cn := value.(*flaggerv1.Canary)
 
 		// format: <name>.<namespace>
 		name := key.(string)
-		current[name] = fmt.Sprintf("%s.%s", canary.Spec.TargetRef.Name, canary.Namespace)
+		current[name] = fmt.Sprintf("%s.%s", cn.Spec.TargetRef.Name, cn.Namespace)
 
 		job, exists := c.jobs[name]
 		// schedule new job for existing job with different analysis interval or non-existing job
-		if (exists && job.GetCanaryAnalysisInterval() != canary.GetAnalysisInterval()) || !exists {
+		if (exists && job.GetCanaryAnalysisInterval() != cn.GetAnalysisInterval()) || !exists {
 			if exists {
 				job.Stop()
 			}
 
 			newJob := CanaryJob{
-				Name:             canary.Name,
-				Namespace:        canary.Namespace,
+				Name:             cn.Name,
+				Namespace:        cn.Namespace,
 				function:         c.advanceCanary,
 				done:             make(chan bool),
-				ticker:           time.NewTicker(canary.GetAnalysisInterval()),
-				analysisInterval: canary.GetAnalysisInterval(),
+				ticker:           time.NewTicker(cn.GetAnalysisInterval()),
+				analysisInterval: cn.GetAnalysisInterval(),
 			}
 
 			c.jobs[name] = newJob
@@ -53,11 +51,11 @@ func (c *Controller) scheduleCanaries() {
 		}
 
 		// compute canaries per namespace total
-		t, ok := stats[canary.Namespace]
+		t, ok := stats[cn.Namespace]
 		if !ok {
-			stats[canary.Namespace] = 1
+			stats[cn.Namespace] = 1
 		} else {
-			stats[canary.Namespace] = t + 1
+			stats[cn.Namespace] = t + 1
 		}
 		return true
 	})
@@ -74,7 +72,8 @@ func (c *Controller) scheduleCanaries() {
 	for canaryName, targetName := range current {
 		for name, target := range current {
 			if name != canaryName && target == targetName {
-				c.logger.With("canary", canaryName).Errorf("Bad things will happen! Found more than one canary with the same target %s", targetName)
+				c.logger.With("canary", canaryName).
+					Errorf("Bad things will happen! Found more than one canary with the same target %s", targetName)
 			}
 		}
 	}
@@ -85,10 +84,10 @@ func (c *Controller) scheduleCanaries() {
 	}
 }
 
-func (c *Controller) advanceCanary(name string, namespace string, skipLivenessChecks bool) {
+func (c *Controller) advanceCanary(name string, namespace string) {
 	begin := time.Now()
 	// check if the canary exists
-	cd, err := c.flaggerClient.FlaggerV1beta1().Canaries(namespace).Get(name, metav1.GetOptions{})
+	cd, err := c.flaggerClient.FlaggerV1beta1().Canaries(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		c.logger.With("canary", fmt.Sprintf("%s.%s", name, namespace)).
 			Errorf("Canary %s.%s not found", name, namespace)
@@ -110,14 +109,14 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 	}
 
 	// init Kubernetes router
-	router := c.routerFactory.KubernetesRouter(cd.Spec.TargetRef.Kind, labelSelector, map[string]string{}, ports)
-	if err := router.Initialize(cd); err != nil {
+	kubeRouter := c.routerFactory.KubernetesRouter(cd.Spec.TargetRef.Kind, labelSelector, ports)
+	if err := kubeRouter.Initialize(cd); err != nil {
 		c.recordEventWarningf(cd, "%v", err)
 		return
 	}
 
 	// create primary
-	err = canaryController.Initialize(cd, skipLivenessChecks)
+	err = canaryController.Initialize(cd)
 	if err != nil {
 		c.recordEventWarningf(cd, "%v", err)
 		return
@@ -127,7 +126,7 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 	meshRouter := c.routerFactory.MeshRouter(provider)
 
 	// create or update svc
-	if err := router.Reconcile(cd); err != nil {
+	if err := kubeRouter.Reconcile(cd); err != nil {
 		c.recordEventWarningf(cd, "%v", err)
 		return
 	}
@@ -162,8 +161,8 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 	}
 
 	// check primary status
-	if !skipLivenessChecks && !cd.SkipAnalysis() {
-		if _, err := canaryController.IsPrimaryReady(cd); err != nil {
+	if !cd.SkipAnalysis() {
+		if err := canaryController.IsPrimaryReady(cd); err != nil {
 			c.recordEventWarningf(cd, "%v", err)
 			return
 		}
@@ -205,23 +204,20 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 		}
 		if err := canaryController.SyncStatus(cd, status); err != nil {
 			c.recordEventWarningf(cd, "%v", err)
-			return
 		}
 		return
 	}
 
 	// check canary status
 	var retriable = true
-	if !skipLivenessChecks {
-		retriable, err = canaryController.IsCanaryReady(cd)
-		if err != nil && retriable {
-			c.recordEventWarningf(cd, "%v", err)
-			return
-		}
+	retriable, err = canaryController.IsCanaryReady(cd)
+	if err != nil && retriable {
+		c.recordEventWarningf(cd, "%v", err)
+		return
 	}
 
 	// check if analysis should be skipped
-	if skip := c.shouldSkipAnalysis(cd, canaryController, meshRouter, primaryWeight, canaryWeight); skip {
+	if skip := c.shouldSkipAnalysis(cd, canaryController, meshRouter); skip {
 		return
 	}
 
@@ -258,7 +254,7 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 
 	// scale canary to zero if promotion has finished
 	if cd.Status.Phase == flaggerv1.CanaryPhaseFinalising {
-		if err := canaryController.Scale(cd, 0); err != nil {
+		if err := canaryController.ScaleToZero(cd); err != nil {
 			c.recordEventWarningf(cd, "%v", err)
 			return
 		}
@@ -297,14 +293,13 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 	// check if the canary success rate is above the threshold
 	// skip check if no traffic is routed or mirrored to canary
 	if canaryWeight == 0 && cd.Status.Iterations == 0 &&
-		(cd.GetAnalysis().Mirror == false || mirrored == false) {
+		!(cd.GetAnalysis().Mirror && mirrored) {
 		c.recordEventInfof(cd, "Starting canary analysis for %s.%s", cd.Spec.TargetRef.Name, cd.Namespace)
 
 		// run pre-rollout web hooks
 		if ok := c.runPreRolloutHooks(cd); !ok {
 			if err := canaryController.SetStatusFailedChecks(cd, cd.Status.FailedChecks+1); err != nil {
 				c.recordEventWarningf(cd, "%v", err)
-				return
 			}
 			return
 		}
@@ -312,7 +307,6 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 		if ok := c.runAnalysis(cd); !ok {
 			if err := canaryController.SetStatusFailedChecks(cd, cd.Status.FailedChecks+1); err != nil {
 				c.recordEventWarningf(cd, "%v", err)
-				return
 			}
 			return
 		}
@@ -333,7 +327,7 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 
 	// strategy: A/B testing
 	if len(cd.GetAnalysis().Match) > 0 && cd.GetAnalysis().Iterations > 0 {
-		c.runAB(cd, canaryController, meshRouter, provider)
+		c.runAB(cd, canaryController, meshRouter)
 		return
 	}
 
@@ -345,12 +339,13 @@ func (c *Controller) advanceCanary(name string, namespace string, skipLivenessCh
 
 	// strategy: Canary progressive traffic increase
 	if cd.GetAnalysis().StepWeight > 0 {
-		c.runCanary(cd, canaryController, meshRouter, provider, mirrored, canaryWeight, primaryWeight, maxWeight)
+		c.runCanary(cd, canaryController, meshRouter, mirrored, canaryWeight, primaryWeight, maxWeight)
 	}
 
 }
 
-func (c *Controller) runCanary(canary *flaggerv1.Canary, canaryController canary.Controller, meshRouter router.Interface, provider string, mirrored bool, canaryWeight int, primaryWeight int, maxWeight int) {
+func (c *Controller) runCanary(canary *flaggerv1.Canary, canaryController canary.Controller,
+	meshRouter router.Interface, mirrored bool, canaryWeight int, primaryWeight int, maxWeight int) {
 	primaryName := fmt.Sprintf("%s-primary", canary.Spec.TargetRef.Name)
 
 	// increase traffic weight
@@ -359,7 +354,7 @@ func (c *Controller) runCanary(canary *flaggerv1.Canary, canaryController canary
 		// When mirroring, all requests go to primary and canary, but only responses from
 		// primary go back to the user.
 		if canary.GetAnalysis().Mirror && canaryWeight == 0 {
-			if mirrored == false {
+			if !mirrored {
 				mirrored = true
 				primaryWeight = 100
 				canaryWeight = 0
@@ -420,7 +415,8 @@ func (c *Controller) runCanary(canary *flaggerv1.Canary, canaryController canary
 	}
 }
 
-func (c *Controller) runAB(canary *flaggerv1.Canary, canaryController canary.Controller, meshRouter router.Interface, provider string) {
+func (c *Controller) runAB(canary *flaggerv1.Canary, canaryController canary.Controller,
+	meshRouter router.Interface) {
 	primaryName := fmt.Sprintf("%s-primary", canary.Spec.TargetRef.Name)
 
 	// route traffic to canary and increment iterations
@@ -462,14 +458,15 @@ func (c *Controller) runAB(canary *flaggerv1.Canary, canaryController canary.Con
 	}
 }
 
-func (c *Controller) runBlueGreen(canary *flaggerv1.Canary, canaryController canary.Controller, meshRouter router.Interface, provider string, mirrored bool) {
+func (c *Controller) runBlueGreen(canary *flaggerv1.Canary, canaryController canary.Controller,
+	meshRouter router.Interface, provider string, mirrored bool) {
 	primaryName := fmt.Sprintf("%s-primary", canary.Spec.TargetRef.Name)
 
 	// increment iterations
 	if canary.GetAnalysis().Iterations > canary.Status.Iterations {
 		// If in "mirror" mode, mirror requests during the entire B/G canary test
 		if provider != "kubernetes" &&
-			canary.GetAnalysis().Mirror == true && mirrored == false {
+			canary.GetAnalysis().Mirror && !mirrored {
 			if err := meshRouter.SetRoutes(canary, 100, 0, true); err != nil {
 				c.recordEventWarningf(canary, "%v", err)
 			}
@@ -531,14 +528,40 @@ func (c *Controller) runBlueGreen(canary *flaggerv1.Canary, canaryController can
 
 }
 
-func (c *Controller) shouldSkipAnalysis(canary *flaggerv1.Canary, canaryController canary.Controller, meshRouter router.Interface, primaryWeight int, canaryWeight int) bool {
+func (c *Controller) runAnalysis(canary *flaggerv1.Canary) bool {
+	// run external checks
+	for _, webhook := range canary.GetAnalysis().Webhooks {
+		if webhook.Type == "" || webhook.Type == flaggerv1.RolloutHook {
+			err := CallWebhook(canary.Name, canary.Namespace, flaggerv1.CanaryPhaseProgressing, webhook)
+			if err != nil {
+				c.recordEventWarningf(canary, "Halt %s.%s advancement external check %s failed %v",
+					canary.Name, canary.Namespace, webhook.Name, err)
+				return false
+			}
+		}
+	}
+
+	ok := c.runBuiltinMetricChecks(canary)
+	if !ok {
+		return ok
+	}
+
+	ok = c.runMetricChecks(canary)
+	if !ok {
+		return ok
+	}
+
+	return true
+}
+
+func (c *Controller) shouldSkipAnalysis(canary *flaggerv1.Canary, canaryController canary.Controller, meshRouter router.Interface) bool {
 	if !canary.SkipAnalysis() {
 		return false
 	}
 
 	// route all traffic to primary
-	primaryWeight = 100
-	canaryWeight = 0
+	primaryWeight := 100
+	canaryWeight := 0
 	if err := meshRouter.SetRoutes(canary, primaryWeight, canaryWeight, false); err != nil {
 		c.recordEventWarningf(canary, "%v", err)
 		return false
@@ -554,7 +577,7 @@ func (c *Controller) shouldSkipAnalysis(canary *flaggerv1.Canary, canaryControll
 	}
 
 	// shutdown canary
-	if err := canaryController.Scale(canary, 0); err != nil {
+	if err := canaryController.ScaleToZero(canary); err != nil {
 		c.recordEventWarningf(canary, "%v", err)
 		return false
 	}
@@ -610,6 +633,13 @@ func (c *Controller) checkCanaryStatus(canary *flaggerv1.Canary, canaryControlle
 		return true
 	}
 
+	var err error
+	canary, err = c.flaggerClient.FlaggerV1beta1().Canaries(canary.Namespace).Get(context.TODO(), canary.Name, metav1.GetOptions{})
+	if err != nil {
+		c.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).Errorf("%v", err)
+		return false
+	}
+
 	if canary.Status.Phase == "" || canary.Status.Phase == flaggerv1.CanaryPhaseInitializing {
 		if err := canaryController.SyncStatus(canary, flaggerv1.CanaryStatus{Phase: flaggerv1.CanaryPhaseInitialized}); err != nil {
 			c.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).Errorf("%v", err)
@@ -655,357 +685,6 @@ func (c *Controller) hasCanaryRevisionChanged(canary *flaggerv1.Canary, canaryCo
 	return false
 }
 
-func (c *Controller) runConfirmRolloutHooks(canary *flaggerv1.Canary, canaryController canary.Controller) bool {
-	for _, webhook := range canary.GetAnalysis().Webhooks {
-		if webhook.Type == flaggerv1.ConfirmRolloutHook {
-			err := CallWebhook(canary.Name, canary.Namespace, flaggerv1.CanaryPhaseProgressing, webhook)
-			if err != nil {
-				if canary.Status.Phase != flaggerv1.CanaryPhaseWaiting {
-					if err := canaryController.SetStatusPhase(canary, flaggerv1.CanaryPhaseWaiting); err != nil {
-						c.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).Errorf("%v", err)
-					}
-					c.recordEventWarningf(canary, "Halt %s.%s advancement waiting for approval %s",
-						canary.Name, canary.Namespace, webhook.Name)
-					c.alert(canary, "Canary is waiting for approval.", false, flaggerv1.SeverityWarn)
-				}
-				return false
-			} else {
-				if canary.Status.Phase == flaggerv1.CanaryPhaseWaiting {
-					if err := canaryController.SetStatusPhase(canary, flaggerv1.CanaryPhaseProgressing); err != nil {
-						c.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).Errorf("%v", err)
-						return false
-					}
-					c.recordEventInfof(canary, "Confirm-rollout check %s passed", webhook.Name)
-					return false
-				}
-			}
-		}
-	}
-	return true
-}
-
-func (c *Controller) runConfirmPromotionHooks(canary *flaggerv1.Canary) bool {
-	for _, webhook := range canary.GetAnalysis().Webhooks {
-		if webhook.Type == flaggerv1.ConfirmPromotionHook {
-			err := CallWebhook(canary.Name, canary.Namespace, flaggerv1.CanaryPhaseProgressing, webhook)
-			if err != nil {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement waiting for promotion approval %s",
-					canary.Name, canary.Namespace, webhook.Name)
-				c.alert(canary, "Canary promotion is waiting for approval.", false, flaggerv1.SeverityWarn)
-				return false
-			} else {
-				c.recordEventInfof(canary, "Confirm-promotion check %s passed", webhook.Name)
-			}
-		}
-	}
-	return true
-}
-
-func (c *Controller) runPreRolloutHooks(canary *flaggerv1.Canary) bool {
-	for _, webhook := range canary.GetAnalysis().Webhooks {
-		if webhook.Type == flaggerv1.PreRolloutHook {
-			err := CallWebhook(canary.Name, canary.Namespace, flaggerv1.CanaryPhaseProgressing, webhook)
-			if err != nil {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement pre-rollout check %s failed %v",
-					canary.Name, canary.Namespace, webhook.Name, err)
-				return false
-			} else {
-				c.recordEventInfof(canary, "Pre-rollout check %s passed", webhook.Name)
-			}
-		}
-	}
-	return true
-}
-
-func (c *Controller) runPostRolloutHooks(canary *flaggerv1.Canary, phase flaggerv1.CanaryPhase) bool {
-	for _, webhook := range canary.GetAnalysis().Webhooks {
-		if webhook.Type == flaggerv1.PostRolloutHook {
-			err := CallWebhook(canary.Name, canary.Namespace, phase, webhook)
-			if err != nil {
-				c.recordEventWarningf(canary, "Post-rollout hook %s failed %v", webhook.Name, err)
-				return false
-			} else {
-				c.recordEventInfof(canary, "Post-rollout check %s passed", webhook.Name)
-			}
-		}
-	}
-	return true
-}
-
-func (c *Controller) runRollbackHooks(canary *flaggerv1.Canary, phase flaggerv1.CanaryPhase) bool {
-	for _, webhook := range canary.GetAnalysis().Webhooks {
-		if webhook.Type == flaggerv1.RollbackHook {
-			err := CallWebhook(canary.Name, canary.Namespace, phase, webhook)
-			if err != nil {
-				c.recordEventInfof(canary, "Rollback hook %s not signaling a rollback", webhook.Name)
-			} else {
-				c.recordEventWarningf(canary, "Rollback check %s passed", webhook.Name)
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (c *Controller) runAnalysis(canary *flaggerv1.Canary) bool {
-	// run external checks
-	for _, webhook := range canary.GetAnalysis().Webhooks {
-		if webhook.Type == "" || webhook.Type == flaggerv1.RolloutHook {
-			err := CallWebhook(canary.Name, canary.Namespace, flaggerv1.CanaryPhaseProgressing, webhook)
-			if err != nil {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement external check %s failed %v",
-					canary.Name, canary.Namespace, webhook.Name, err)
-				return false
-			}
-		}
-	}
-
-	ok := c.runBuiltinMetricChecks(canary)
-	if !ok {
-		return ok
-	}
-
-	ok = c.runMetricChecks(canary)
-	if !ok {
-		return ok
-	}
-
-	return true
-}
-
-func (c *Controller) runBuiltinMetricChecks(canary *flaggerv1.Canary) bool {
-	// override the global provider if one is specified in the canary spec
-	var metricsProvider string
-	// set the metrics provider to Crossover Prometheus when Crossover is the mesh provider
-	// For example, `crossover` metrics provider should be used for `smi:crossover` mesh provider
-	if strings.Contains(c.meshProvider, "crossover") {
-		metricsProvider = "crossover"
-	} else {
-		metricsProvider = c.meshProvider
-	}
-
-	if canary.Spec.Provider != "" {
-		metricsProvider = canary.Spec.Provider
-
-		// set the metrics provider to Linkerd Prometheus when Linkerd is the default mesh provider
-		if strings.Contains(c.meshProvider, "linkerd") {
-			metricsProvider = "linkerd"
-		}
-	}
-	// set the metrics provider to query Prometheus for the canary Kubernetes service if the canary target is Service
-	if canary.Spec.TargetRef.Kind == "Service" {
-		metricsProvider = metricsProvider + MetricsProviderServiceSuffix
-	}
-
-	// create observer based on the mesh provider
-	observerFactory := c.observerFactory
-
-	// override the global metrics server if one is specified in the canary spec
-	if canary.Spec.MetricsServer != "" {
-		var err error
-		observerFactory, err = observers.NewFactory(canary.Spec.MetricsServer)
-		if err != nil {
-			c.recordEventErrorf(canary, "Error building Prometheus client for %s %v", canary.Spec.MetricsServer, err)
-			return false
-		}
-	}
-	observer := observerFactory.Observer(metricsProvider)
-
-	// run metrics checks
-	for _, metric := range canary.GetAnalysis().Metrics {
-		if metric.Interval == "" {
-			metric.Interval = canary.GetMetricInterval()
-		}
-
-		if metric.Name == "request-success-rate" {
-			val, err := observer.GetRequestSuccessRate(toMetricModel(canary, metric.Interval))
-			if err != nil {
-				if strings.Contains(err.Error(), "no values found") {
-					c.recordEventWarningf(canary, "Halt advancement no values found for %s metric %s probably %s.%s is not receiving traffic",
-						metricsProvider, metric.Name, canary.Spec.TargetRef.Name, canary.Namespace)
-				} else {
-					c.recordEventErrorf(canary, "Prometheus query failed: %v", err)
-				}
-				return false
-			}
-
-			if metric.ThresholdRange != nil {
-				tr := *metric.ThresholdRange
-				if tr.Min != nil && val < *tr.Min {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement success rate %.2f%% < %v%%",
-						canary.Name, canary.Namespace, val, *tr.Min)
-					return false
-				}
-				if tr.Max != nil && val > *tr.Max {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement success rate %.2f%% > %v%%",
-						canary.Name, canary.Namespace, val, *tr.Max)
-					return false
-				}
-			} else if metric.Threshold > val {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement success rate %.2f%% < %v%%",
-					canary.Name, canary.Namespace, val, metric.Threshold)
-				return false
-			}
-		}
-
-		if metric.Name == "request-duration" {
-			val, err := observer.GetRequestDuration(toMetricModel(canary, metric.Interval))
-			if err != nil {
-				if strings.Contains(err.Error(), "no values found") {
-					c.recordEventWarningf(canary, "Halt advancement no values found for %s metric %s probably %s.%s is not receiving traffic",
-						metricsProvider, metric.Name, canary.Spec.TargetRef.Name, canary.Namespace)
-				} else {
-					c.recordEventErrorf(canary, "Prometheus query failed: %v", err)
-				}
-				return false
-			}
-			if metric.ThresholdRange != nil {
-				tr := *metric.ThresholdRange
-				if tr.Min != nil && val < time.Duration(*tr.Min)*time.Millisecond {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement request duration %v < %v",
-						canary.Name, canary.Namespace, val, time.Duration(*tr.Min)*time.Millisecond)
-					return false
-				}
-				if tr.Max != nil && val > time.Duration(*tr.Max)*time.Millisecond {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement request duration %v > %v",
-						canary.Name, canary.Namespace, val, time.Duration(*tr.Max)*time.Millisecond)
-					return false
-				}
-			} else if val > time.Duration(metric.Threshold)*time.Millisecond {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement request duration %v > %v",
-					canary.Name, canary.Namespace, val, time.Duration(metric.Threshold)*time.Millisecond)
-				return false
-			}
-		}
-
-		// in-line PromQL
-		if metric.Query != "" {
-			val, err := observerFactory.Client.RunQuery(metric.Query)
-			if err != nil {
-				if strings.Contains(err.Error(), "no values found") {
-					c.recordEventWarningf(canary, "Halt advancement no values found for metric: %s",
-						metric.Name)
-				} else {
-					c.recordEventErrorf(canary, "Prometheus query failed for %s: %v", metric.Name, err)
-				}
-				return false
-			}
-			if metric.ThresholdRange != nil {
-				tr := *metric.ThresholdRange
-				if tr.Min != nil && val < *tr.Min {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement %s %.2f < %v",
-						canary.Name, canary.Namespace, metric.Name, val, *tr.Min)
-					return false
-				}
-				if tr.Max != nil && val > *tr.Max {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement %s %.2f > %v",
-						canary.Name, canary.Namespace, metric.Name, val, *tr.Max)
-					return false
-				}
-			} else if val > metric.Threshold {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement %s %.2f > %v",
-					canary.Name, canary.Namespace, metric.Name, val, metric.Threshold)
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
-func (c *Controller) runMetricChecks(canary *flaggerv1.Canary) bool {
-	for _, metric := range canary.GetAnalysis().Metrics {
-		if metric.TemplateRef != nil {
-			namespace := canary.Namespace
-			if metric.TemplateRef.Namespace != "" {
-				namespace = metric.TemplateRef.Namespace
-			}
-
-			template, err := c.flaggerInformers.MetricInformer.Lister().MetricTemplates(namespace).Get(metric.TemplateRef.Name)
-			if err != nil {
-				c.recordEventErrorf(canary, "Metric template %s.%s error: %v", metric.TemplateRef.Name, namespace, err)
-				return false
-			}
-
-			var credentials map[string][]byte
-			if template.Spec.Provider.SecretRef != nil {
-				secret, err := c.kubeClient.CoreV1().Secrets(namespace).Get(template.Spec.Provider.SecretRef.Name, metav1.GetOptions{})
-				if err != nil {
-					c.recordEventErrorf(canary, "Metric template %s.%s secret %s error: %v",
-						metric.TemplateRef.Name, namespace, template.Spec.Provider.SecretRef.Name, err)
-					return false
-				}
-				credentials = secret.Data
-			}
-
-			factory := providers.Factory{}
-			provider, err := factory.Provider(metric.Interval, template.Spec.Provider, credentials)
-			if err != nil {
-				c.recordEventErrorf(canary, "Metric template %s.%s provider %s error: %v",
-					metric.TemplateRef.Name, namespace, template.Spec.Provider.Type, err)
-				return false
-			}
-
-			query, err := observers.RenderQuery(template.Spec.Query, toMetricModel(canary, metric.Interval))
-			if err != nil {
-				c.recordEventErrorf(canary, "Metric template %s.%s query render error: %v",
-					metric.TemplateRef.Name, namespace, err)
-				return false
-			}
-
-			val, err := provider.RunQuery(query)
-			if err != nil {
-				if strings.Contains(err.Error(), "no values found") {
-					c.recordEventWarningf(canary, "Halt advancement no values found for custom metric: %s",
-						metric.Name)
-				} else {
-					c.recordEventErrorf(canary, "Metric query failed for %s: %v", metric.Name, err)
-				}
-				return false
-			}
-
-			if metric.ThresholdRange != nil {
-				tr := *metric.ThresholdRange
-				if tr.Min != nil && val < *tr.Min {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement %s %.2f < %v",
-						canary.Name, canary.Namespace, metric.Name, val, *tr.Min)
-					return false
-				}
-				if tr.Max != nil && val > *tr.Max {
-					c.recordEventWarningf(canary, "Halt %s.%s advancement %s %.2f > %v",
-						canary.Name, canary.Namespace, metric.Name, val, *tr.Max)
-					return false
-				}
-			} else if val > metric.Threshold {
-				c.recordEventWarningf(canary, "Halt %s.%s advancement %s %.2f > %v",
-					canary.Name, canary.Namespace, metric.Name, val, metric.Threshold)
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
-func toMetricModel(r *flaggerv1.Canary, interval string) flaggerv1.MetricTemplateModel {
-	service := r.Spec.TargetRef.Name
-	if r.Spec.Service.Name != "" {
-		service = r.Spec.Service.Name
-	}
-	ingress := r.Spec.TargetRef.Name
-	if r.Spec.IngressRef != nil {
-		ingress = r.Spec.IngressRef.Name
-	}
-	return flaggerv1.MetricTemplateModel{
-		Name:      r.Name,
-		Namespace: r.Namespace,
-		Target:    r.Spec.TargetRef.Name,
-		Service:   service,
-		Ingress:   ingress,
-		Interval:  interval,
-	}
-}
-
 func (c *Controller) rollback(canary *flaggerv1.Canary, canaryController canary.Controller, meshRouter router.Interface) {
 	if canary.Status.FailedChecks >= canary.GetAnalysisThreshold() {
 		c.recordEventWarningf(canary, "Rolling back %s.%s failed checks threshold reached %v",
@@ -1030,7 +709,7 @@ func (c *Controller) rollback(canary *flaggerv1.Canary, canaryController canary.
 	c.recorder.SetWeight(canary, primaryWeight, canaryWeight)
 
 	// shutdown canary
-	if err := canaryController.Scale(canary, 0); err != nil {
+	if err := canaryController.ScaleToZero(canary); err != nil {
 		c.recordEventWarningf(canary, "%v", err)
 		return
 	}

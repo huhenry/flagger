@@ -1,6 +1,8 @@
 package router
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/go-cmp/cmp"
@@ -28,21 +30,17 @@ type IstioRouter struct {
 func (ir *IstioRouter) Reconcile(canary *flaggerv1.Canary) error {
 	_, primaryName, canaryName := canary.GetServiceNames()
 
-	err := ir.reconcileDestinationRule(canary, canaryName)
-	if err != nil {
-		return err
+	if err := ir.reconcileDestinationRule(canary, canaryName); err != nil {
+		return fmt.Errorf("reconcileDestinationRule failed: %w", err)
 	}
 
-	err = ir.reconcileDestinationRule(canary, primaryName)
-	if err != nil {
-		return err
+	if err := ir.reconcileDestinationRule(canary, primaryName); err != nil {
+		return fmt.Errorf("reconcileDestinationRule failed: %w", err)
 	}
 
-	err = ir.reconcileVirtualService(canary)
-	if err != nil {
-		return err
+	if err := ir.reconcileVirtualService(canary); err != nil {
+		return fmt.Errorf("reconcileVirtualService failed: %w", err)
 	}
-
 	return nil
 }
 
@@ -52,7 +50,7 @@ func (ir *IstioRouter) reconcileDestinationRule(canary *flaggerv1.Canary, name s
 		TrafficPolicy: canary.Spec.Service.TrafficPolicy,
 	}
 
-	destinationRule, err := ir.istioClient.NetworkingV1alpha3().DestinationRules(canary.Namespace).Get(name, metav1.GetOptions{})
+	destinationRule, err := ir.istioClient.NetworkingV1alpha3().DestinationRules(canary.Namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	// insert
 	if errors.IsNotFound(err) {
 		destinationRule = &istiov1alpha3.DestinationRule{
@@ -69,17 +67,15 @@ func (ir *IstioRouter) reconcileDestinationRule(canary *flaggerv1.Canary, name s
 			},
 			Spec: newSpec,
 		}
-		_, err = ir.istioClient.NetworkingV1alpha3().DestinationRules(canary.Namespace).Create(destinationRule)
+		_, err = ir.istioClient.NetworkingV1alpha3().DestinationRules(canary.Namespace).Create(context.TODO(), destinationRule, metav1.CreateOptions{})
 		if err != nil {
-			return fmt.Errorf("DestinationRule %s.%s create error %v", name, canary.Namespace, err)
+			return fmt.Errorf("DestinationRule %s.%s create error: %w", name, canary.Namespace, err)
 		}
 		ir.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 			Infof("DestinationRule %s.%s created", destinationRule.GetName(), canary.Namespace)
 		return nil
-	}
-
-	if err != nil {
-		return fmt.Errorf("DestinationRule %s.%s query error %v", name, canary.Namespace, err)
+	} else if err != nil {
+		return fmt.Errorf("DestinationRule %s.%s get query error: %w", name, canary.Namespace, err)
 	}
 
 	// update
@@ -87,9 +83,9 @@ func (ir *IstioRouter) reconcileDestinationRule(canary *flaggerv1.Canary, name s
 		if diff := cmp.Diff(newSpec, destinationRule.Spec); diff != "" {
 			clone := destinationRule.DeepCopy()
 			clone.Spec = newSpec
-			_, err = ir.istioClient.NetworkingV1alpha3().DestinationRules(canary.Namespace).Update(clone)
+			_, err = ir.istioClient.NetworkingV1alpha3().DestinationRules(canary.Namespace).Update(context.TODO(), clone, metav1.UpdateOptions{})
 			if err != nil {
-				return fmt.Errorf("DestinationRule %s.%s update error %v", name, canary.Namespace, err)
+				return fmt.Errorf("DestinationRule %s.%s update error: %w", name, canary.Namespace, err)
 			}
 			ir.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 				Infof("DestinationRule %s.%s updated", destinationRule.GetName(), canary.Namespace)
@@ -178,7 +174,7 @@ func (ir *IstioRouter) reconcileVirtualService(canary *flaggerv1.Canary) error {
 		}
 	}
 
-	virtualService, err := ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	virtualService, err := ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	// insert
 	if errors.IsNotFound(err) {
 		virtualService = &istiov1alpha3.VirtualService{
@@ -195,17 +191,15 @@ func (ir *IstioRouter) reconcileVirtualService(canary *flaggerv1.Canary) error {
 			},
 			Spec: newSpec,
 		}
-		_, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Create(virtualService)
+		_, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Create(context.TODO(), virtualService, metav1.CreateOptions{})
 		if err != nil {
-			return fmt.Errorf("VirtualService %s.%s create error %v", apexName, canary.Namespace, err)
+			return fmt.Errorf("VirtualService %s.%s create error: %w", apexName, canary.Namespace, err)
 		}
 		ir.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 			Infof("VirtualService %s.%s created", virtualService.GetName(), canary.Namespace)
 		return nil
-	}
-
-	if err != nil {
-		return fmt.Errorf("VirtualService %s.%s query error %v", apexName, canary.Namespace, err)
+	} else if err != nil {
+		return fmt.Errorf("VirtualService %s.%s get query error %v", apexName, canary.Namespace, err)
 	}
 
 	// update service but keep the original destination weights and mirror
@@ -214,14 +208,30 @@ func (ir *IstioRouter) reconcileVirtualService(canary *flaggerv1.Canary) error {
 			newSpec,
 			virtualService.Spec,
 			cmpopts.IgnoreFields(istiov1alpha3.DestinationWeight{}, "Weight"),
-			cmpopts.IgnoreFields(istiov1alpha3.HTTPRoute{}, "Mirror"),
+			cmpopts.IgnoreFields(istiov1alpha3.HTTPRoute{}, "Mirror", "MirrorPercentage"),
 		); diff != "" {
 			vtClone := virtualService.DeepCopy()
 			vtClone.Spec = newSpec
 
-			_, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Update(vtClone)
+			//If annotation kubectl.kubernetes.io/last-applied-configuration is present no need to duplicate
+			//serialization.  If not present store the serialized object in annotation
+			//flagger.kubernetes.app/original-configuration
+			if _, ok := vtClone.Annotations[kubectlAnnotation]; !ok {
+				b, err := json.Marshal(virtualService.Spec)
+				if err != nil {
+					ir.logger.Warnf("Unable to marshal VS %s for orig-configuration annotation", virtualService.Name)
+				}
+
+				if vtClone.ObjectMeta.Annotations == nil {
+					vtClone.ObjectMeta.Annotations = make(map[string]string)
+				}
+
+				vtClone.ObjectMeta.Annotations[configAnnotation] = string(b)
+			}
+
+			_, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Update(context.TODO(), vtClone, metav1.UpdateOptions{})
 			if err != nil {
-				return fmt.Errorf("VirtualService %s.%s update error %v", apexName, canary.Namespace, err)
+				return fmt.Errorf("VirtualService %s.%s update error: %w", apexName, canary.Namespace, err)
 			}
 			ir.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 				Infof("VirtualService %s.%s updated", virtualService.GetName(), canary.Namespace)
@@ -240,13 +250,9 @@ func (ir *IstioRouter) GetRoutes(canary *flaggerv1.Canary) (
 ) {
 	apexName, primaryName, canaryName := canary.GetServiceNames()
 	vs := &istiov1alpha3.VirtualService{}
-	vs, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	vs, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			err = fmt.Errorf("VirtualService %s.%s not found", apexName, canary.Namespace)
-			return
-		}
-		err = fmt.Errorf("VirtualService %s.%s query error %v", apexName, canary.Namespace, err)
+		err = fmt.Errorf("VirtualService %s.%s get query error %v", apexName, canary.Namespace, err)
 		return
 	}
 
@@ -289,13 +295,9 @@ func (ir *IstioRouter) SetRoutes(
 ) error {
 	apexName, primaryName, canaryName := canary.GetServiceNames()
 
-	vs, err := ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	vs, err := ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("VirtualService %s.%s not found", apexName, canary.Namespace)
-
-		}
-		return fmt.Errorf("VirtualService %s.%s query error %v", apexName, canary.Namespace, err)
+		return fmt.Errorf("VirtualService %s.%s get query error %v", apexName, canary.Namespace, err)
 	}
 
 	vsCopy := vs.DeepCopy()
@@ -319,6 +321,10 @@ func (ir *IstioRouter) SetRoutes(
 	if mirrored {
 		vsCopy.Spec.Http[0].Mirror = &istiov1alpha3.Destination{
 			Host: canaryName,
+		}
+
+		if mw := canary.GetAnalysis().MirrorWeight; mw > 0 {
+			vsCopy.Spec.Http[0].MirrorPercentage = &istiov1alpha3.Percent{Value: float64(mw)}
 		}
 	}
 
@@ -353,10 +359,46 @@ func (ir *IstioRouter) SetRoutes(
 		}
 	}
 
-	vs, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Update(vsCopy)
+	vs, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Update(context.TODO(), vsCopy, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("VirtualService %s.%s update failed: %v", apexName, canary.Namespace, err)
+		return fmt.Errorf("VirtualService %s.%s update failed: %w", apexName, canary.Namespace, err)
+	}
+	return nil
+}
 
+func (ir *IstioRouter) Finalize(canary *flaggerv1.Canary) error {
+	// Need to see if I can get the annotation orig-configuration
+	apexName, _, _ := canary.GetServiceNames()
+
+	vs, err := ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("VirtualService %s.%s get query error: %w", apexName, canary.Namespace, err)
+	}
+
+	var storedSpec istiov1alpha3.VirtualServiceSpec
+	if a, ok := vs.ObjectMeta.Annotations[kubectlAnnotation]; ok {
+		var storedVS istiov1alpha3.VirtualService
+		if err := json.Unmarshal([]byte(a), &storedVS); err != nil {
+			return fmt.Errorf("VirtualService %s.%s failed to unMarshal annotation %s",
+				apexName, canary.Namespace, kubectlAnnotation)
+		}
+		storedSpec = storedVS.Spec
+	} else if a, ok := vs.ObjectMeta.Annotations[configAnnotation]; ok {
+		if err := json.Unmarshal([]byte(a), &storedSpec); err != nil {
+			return fmt.Errorf("VirtualService %s.%s failed to unMarshal annotation %s",
+				apexName, canary.Namespace, configAnnotation)
+		}
+	} else {
+		ir.logger.Warnf("VirtualService %s.%s original configuration not found, unable to revert", apexName, canary.Namespace)
+		return nil
+	}
+
+	clone := vs.DeepCopy()
+	clone.Spec = storedSpec
+
+	_, err = ir.istioClient.NetworkingV1alpha3().VirtualServices(canary.Namespace).Update(context.TODO(), clone, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("VirtualService %s.%s update error: %w", apexName, canary.Namespace, err)
 	}
 	return nil
 }

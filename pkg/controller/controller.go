@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -35,7 +36,6 @@ const controllerAgentName = "flagger"
 // Controller is managing the canary objects and schedules canary deployments
 type Controller struct {
 	kubeClient       kubernetes.Interface
-	istioClient      clientset.Interface
 	flaggerClient    clientset.Interface
 	flaggerInformers Informers
 	flaggerSynced    cache.InformerSynced
@@ -62,7 +62,6 @@ type Informers struct {
 
 func NewController(
 	kubeClient kubernetes.Interface,
-	istioClient clientset.Interface,
 	flaggerClient clientset.Interface,
 	flaggerInformers Informers,
 	flaggerWindow time.Duration,
@@ -89,7 +88,6 @@ func NewController(
 
 	ctrl := &Controller{
 		kubeClient:       kubeClient,
-		istioClient:      istioClient,
 		flaggerClient:    flaggerClient,
 		flaggerInformers: flaggerInformers,
 		flaggerSynced:    flaggerInformers.CanaryInformer.Informer().HasSynced,
@@ -131,6 +129,21 @@ func NewController(
 				}
 
 				ctrl.enqueue(new)
+			} else if !newCanary.DeletionTimestamp.IsZero() && hasFinalizer(&newCanary) ||
+				!hasFinalizer(&newCanary) && newCanary.Spec.RevertOnDeletion {
+				// If this was marked for deletion and has finalizers enqueue for finalizing or
+				// if this canary doesn't have finalizers and RevertOnDeletion is true updated speck enqueue
+				ctrl.enqueue(new)
+			}
+
+			// If canary no longer desires reverting, finalizers should be removed
+			if oldCanary.Spec.RevertOnDeletion && !newCanary.Spec.RevertOnDeletion {
+				ctrl.logger.Infof("%s.%s opting out, deleting finalizers", newCanary.Name, newCanary.Namespace)
+				err := ctrl.removeFinalizer(&newCanary)
+				if err != nil {
+					ctrl.logger.Warnf("Failed to remove finalizers for %s.%s: %v", oldCanary.Name, oldCanary.Namespace, err)
+					return
+				}
 			}
 		},
 		DeleteFunc: func(old interface{}) {
@@ -190,9 +203,9 @@ func (c *Controller) processNextWorkItem() bool {
 			return nil
 		}
 		// Run the syncHandler, passing it the namespace/name string of the
-		// Foo resource to be synced.
+		// Canary resource to be synced.
 		if err := c.syncHandler(key); err != nil {
-			return fmt.Errorf("error syncing '%s': %s", key, err.Error())
+			return fmt.Errorf("error syncing '%s': %w", key, err)
 		}
 		// Finally, if no error occurs we Forget this item so it does not
 		// get queued again until another change happens.
@@ -220,6 +233,36 @@ func (c *Controller) syncHandler(key string) error {
 		return nil
 	}
 
+	// Finalize if canary has been marked for deletion and revert is desired
+	if cd.Spec.RevertOnDeletion && cd.ObjectMeta.DeletionTimestamp != nil {
+		// If finalizers have been previously removed proceed
+		if !hasFinalizer(cd) {
+			c.logger.Infof("Canary %s.%s has been finalized", cd.Name, cd.Namespace)
+			return nil
+		}
+
+		if cd.Status.Phase != flaggerv1.CanaryPhaseTerminated {
+			if err := c.finalize(cd); err != nil {
+				c.logger.With("canary", fmt.Sprintf("%s.%s", cd.Name, cd.Namespace)).
+					Errorf("Unable to finalize canary: %v", err)
+				return fmt.Errorf("unable to finalize to canary %s.%s error: %w", cd.Name, cd.Namespace, err)
+			}
+		}
+
+		// Remove finalizer from Canary
+		if err := c.removeFinalizer(cd); err != nil {
+			c.logger.With("canary", fmt.Sprintf("%s.%s", cd.Name, cd.Namespace)).
+				Errorf("Unable to remove finalizer for canary %s.%s error: %v", cd.Name, cd.Namespace, err)
+			return fmt.Errorf("unable to remove finalizer for canary %s.%s: %w", cd.Name, cd.Namespace, err)
+		}
+
+		// record event
+		c.recordEventInfof(cd, "Terminated canary %s.%s", cd.Name, cd.Namespace)
+
+		c.logger.Infof("Canary %s.%s has been successfully processed and marked for deletion", cd.Name, cd.Namespace)
+		return nil
+	}
+
 	// set status condition for new canaries
 	if cd.Status.Conditions == nil {
 		if ok, conditions := canary.MakeStatusConditions(cd, flaggerv1.CanaryPhaseInitializing); ok {
@@ -227,15 +270,23 @@ func (c *Controller) syncHandler(key string) error {
 			cdCopy.Status.Conditions = conditions
 			cdCopy.Status.LastTransitionTime = metav1.Now()
 			cdCopy.Status.Phase = flaggerv1.CanaryPhaseInitializing
-			_, err := c.flaggerClient.FlaggerV1beta1().Canaries(cd.Namespace).UpdateStatus(cdCopy)
+			_, err := c.flaggerClient.FlaggerV1beta1().Canaries(cd.Namespace).UpdateStatus(context.TODO(), cdCopy, metav1.UpdateOptions{})
 			if err != nil {
 				c.logger.Errorf("%s status condition update error: %v", key, err)
-				return fmt.Errorf("%s status condition update error: %v", key, err)
+				return fmt.Errorf("%s status condition update error: %w", key, err)
 			}
 		}
 	}
 
 	c.canaries.Store(fmt.Sprintf("%s.%s", cd.Name, cd.Namespace), cd)
+
+	// If opt in for revertOnDeletion add finalizer if not present
+	if cd.Spec.RevertOnDeletion && !hasFinalizer(cd) {
+		if err := c.addFinalizer(cd); err != nil {
+			return fmt.Errorf("unable to add finalizer to canary %s.%s: %w", cd.Name, cd.Namespace, err)
+		}
+
+	}
 	c.logger.Infof("Synced %s", key)
 
 	return nil
@@ -255,7 +306,7 @@ func checkCustomResourceType(obj interface{}, logger *zap.SugaredLogger) (flagge
 	var roll *flaggerv1.Canary
 	var ok bool
 	if roll, ok = obj.(*flaggerv1.Canary); !ok {
-		logger.Errorf("Event Watch received an invalid object: %#v", obj)
+		logger.Errorf("Event watch received an invalid object: %#v", obj)
 		return flaggerv1.Canary{}, false
 	}
 	return *roll, true

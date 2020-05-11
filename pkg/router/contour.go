@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/google/go-cmp/cmp"
@@ -129,7 +130,7 @@ func (cr *ContourRouter) Reconcile(canary *flaggerv1.Canary) error {
 		}
 	}
 
-	proxy, err := cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	proxy, err := cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		proxy = &contourv1.HTTPProxy{
 			ObjectMeta: metav1.ObjectMeta{
@@ -150,17 +151,15 @@ func (cr *ContourRouter) Reconcile(canary *flaggerv1.Canary) error {
 			},
 		}
 
-		_, err = cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Create(proxy)
+		_, err = cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Create(context.TODO(), proxy, metav1.CreateOptions{})
 		if err != nil {
-			return fmt.Errorf("HTTPProxy %s.%s create error %v", apexName, canary.Namespace, err)
+			return fmt.Errorf("HTTPProxy %s.%s create error: %w", apexName, canary.Namespace, err)
 		}
 		cr.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 			Infof("HTTPProxy %s.%s created", proxy.GetName(), canary.Namespace)
 		return nil
-	}
-
-	if err != nil {
-		return fmt.Errorf("HTTPProxy %s.%s query error %v", apexName, canary.Namespace, err)
+	} else if err != nil {
+		return fmt.Errorf("HTTPProxy %s.%s get query error: %w", apexName, canary.Namespace, err)
 	}
 
 	// update HTTPProxy but keep the original destination weights
@@ -173,9 +172,9 @@ func (cr *ContourRouter) Reconcile(canary *flaggerv1.Canary) error {
 			clone := proxy.DeepCopy()
 			clone.Spec = newSpec
 
-			_, err = cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Update(clone)
+			_, err = cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Update(context.TODO(), clone, metav1.UpdateOptions{})
 			if err != nil {
-				return fmt.Errorf("HTTPProxy %s.%s update error %v", apexName, canary.Namespace, err)
+				return fmt.Errorf("HTTPProxy %s.%s update error: %w", apexName, canary.Namespace, err)
 			}
 			cr.logger.With("canary", fmt.Sprintf("%s.%s", canary.Name, canary.Namespace)).
 				Infof("HTTPProxy %s.%s updated", proxy.GetName(), canary.Namespace)
@@ -194,13 +193,9 @@ func (cr *ContourRouter) GetRoutes(canary *flaggerv1.Canary) (
 ) {
 	apexName, primaryName, _ := canary.GetServiceNames()
 
-	proxy, err := cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	proxy, err := cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			err = fmt.Errorf("HTTPProxy %s.%s not found", apexName, canary.Namespace)
-			return
-		}
-		err = fmt.Errorf("HTTPProxy %s.%s query error %v", apexName, canary.Namespace, err)
+		err = fmt.Errorf("HTTPProxy %s.%s get query error %w", apexName, canary.Namespace, err)
 		return
 	}
 
@@ -225,7 +220,7 @@ func (cr *ContourRouter) SetRoutes(
 	canary *flaggerv1.Canary,
 	primaryWeight int,
 	canaryWeight int,
-	mirrored bool,
+	_ bool,
 ) error {
 	apexName, primaryName, canaryName := canary.GetServiceNames()
 
@@ -233,13 +228,9 @@ func (cr *ContourRouter) SetRoutes(
 		return fmt.Errorf("HTTPProxy %s.%s update failed: no valid weights", apexName, canary.Namespace)
 	}
 
-	proxy, err := cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Get(apexName, metav1.GetOptions{})
+	proxy, err := cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Get(context.TODO(), apexName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("HTTPProxy %s.%s not found", apexName, canary.Namespace)
-
-		}
-		return fmt.Errorf("HTTPProxy %s.%s query error %v", apexName, canary.Namespace, err)
+		return fmt.Errorf("HTTPProxy %s.%s query error: %w", apexName, canary.Namespace, err)
 	}
 
 	proxy.Spec = contourv1.HTTPProxySpec{
@@ -342,9 +333,9 @@ func (cr *ContourRouter) SetRoutes(
 		}
 	}
 
-	_, err = cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Update(proxy)
+	_, err = cr.contourClient.ProjectcontourV1().HTTPProxies(canary.Namespace).Update(context.TODO(), proxy, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("HTTPProxy %s.%s update error %v", apexName, canary.Namespace, err)
+		return fmt.Errorf("HTTPProxy %s.%s update error: %w", apexName, canary.Namespace, err)
 	}
 	return nil
 }
@@ -426,4 +417,8 @@ func (cr *ContourRouter) makeLinkerdHeaderValue(canary *flaggerv1.Canary, servic
 		Value: fmt.Sprintf("%s.%s.svc.cluster.local:%v", serviceName, canary.Namespace, canary.Spec.Service.Port),
 	}
 
+}
+
+func (cr *ContourRouter) Finalize(_ *flaggerv1.Canary) error {
+	return nil
 }

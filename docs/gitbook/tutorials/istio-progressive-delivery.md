@@ -149,6 +149,9 @@ spec:
           cmd: "hey -z 1m -q 10 -c 2 http://podinfo-canary.test:9898/"
 ```
 
+**Note** that when using Istio 1.5 you have to replace the `request-duration`
+with a [metric template](https://docs.flagger.app/dev/upgrade-guide#istio-telemetry-v2).
+
 Save the above resource as podinfo-canary.yaml and then apply it:
 
 ```bash
@@ -321,6 +324,8 @@ spec:
     iterations: 10
     # enable traffic shadowing 
     mirror: true
+    # weight of the traffic mirrored to your canary (defaults to 100%)
+    mirrorWeight: 100
     metrics:
     - name: request-success-rate
       thresholdRange:
@@ -354,7 +359,7 @@ With the above configuration, Flagger will run a canary release with the followi
 * run the acceptance tests
 * abort the canary release if tests fail
 * start the load tests
-* mirror traffic from primary to canary
+* mirror 100% of the traffic from primary to canary
 * check request success rate and request duration every minute
 * abort the canary release if the metrics check failure threshold is reached
 * stop traffic mirroring after the number of iterations is reached

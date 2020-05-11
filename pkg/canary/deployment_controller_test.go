@@ -1,8 +1,11 @@
 package canary
 
 import (
+	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,276 +16,108 @@ import (
 
 func TestDeploymentController_Sync(t *testing.T) {
 	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	mocks.initializeCanary(t)
 
-	depPrimary, err := mocks.kubeClient.AppsV1().Deployments("default").Get("podinfo-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	depPrimary, err := mocks.kubeClient.AppsV1().Deployments("default").Get(context.TODO(), "podinfo-primary", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	dep := newDeploymentControllerTest()
-
 	primaryImage := depPrimary.Spec.Template.Spec.Containers[0].Image
 	sourceImage := dep.Spec.Template.Spec.Containers[0].Image
-	if primaryImage != sourceImage {
-		t.Errorf("Got image %s wanted %s", primaryImage, sourceImage)
-	}
+	assert.Equal(t, sourceImage, primaryImage)
 
-	hpaPrimary, err := mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Get("podinfo-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	if hpaPrimary.Spec.ScaleTargetRef.Name != depPrimary.Name {
-		t.Errorf("Got HPA target %s wanted %s", hpaPrimary.Spec.ScaleTargetRef.Name, depPrimary.Name)
-	}
+	hpaPrimary, err := mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Get(context.TODO(), "podinfo-primary", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, depPrimary.Name, hpaPrimary.Spec.ScaleTargetRef.Name)
 }
 
 func TestDeploymentController_Promote(t *testing.T) {
 	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	mocks.initializeCanary(t)
 
 	dep2 := newDeploymentControllerTestV2()
-	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(dep2)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	_, err := mocks.kubeClient.AppsV1().Deployments("default").Update(context.TODO(), dep2, metav1.UpdateOptions{})
+	require.NoError(t, err)
 
 	config2 := newDeploymentControllerTestConfigMapV2()
-	_, err = mocks.kubeClient.CoreV1().ConfigMaps("default").Update(config2)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	_, err = mocks.kubeClient.CoreV1().ConfigMaps("default").Update(context.TODO(), config2, metav1.UpdateOptions{})
+	require.NoError(t, err)
 
-	hpa, err := mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	hpa, err := mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
+
 	hpaClone := hpa.DeepCopy()
 	hpaClone.Spec.MaxReplicas = 2
 
-	_, err = mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Update(hpaClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	_, err = mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Update(context.TODO(), hpaClone, metav1.UpdateOptions{})
+	require.NoError(t, err)
 
 	err = mocks.controller.Promote(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
-	depPrimary, err := mocks.kubeClient.AppsV1().Deployments("default").Get("podinfo-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	depPrimary, err := mocks.kubeClient.AppsV1().Deployments("default").Get(context.TODO(), "podinfo-primary", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	primaryImage := depPrimary.Spec.Template.Spec.Containers[0].Image
 	sourceImage := dep2.Spec.Template.Spec.Containers[0].Image
-	if primaryImage != sourceImage {
-		t.Errorf("Got image %s wanted %s", primaryImage, sourceImage)
-	}
+	assert.Equal(t, sourceImage, primaryImage)
 
-	configPrimary, err := mocks.kubeClient.CoreV1().ConfigMaps("default").Get("podinfo-config-env-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	configPrimary, err := mocks.kubeClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "podinfo-config-env-primary", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, config2.Data["color"], configPrimary.Data["color"])
 
-	if configPrimary.Data["color"] != config2.Data["color"] {
-		t.Errorf("Got primary ConfigMap color %s wanted %s", configPrimary.Data["color"], config2.Data["color"])
-	}
-
-	hpaPrimary, err := mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Get("podinfo-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	if hpaPrimary.Spec.MaxReplicas != 2 {
-		t.Errorf("Got primary HPA MaxReplicas %v wanted %v", hpaPrimary.Spec.MaxReplicas, 2)
-	}
+	hpaPrimary, err := mocks.kubeClient.AutoscalingV2beta1().HorizontalPodAutoscalers("default").Get(context.TODO(), "podinfo-primary", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), hpaPrimary.Spec.MaxReplicas)
 }
 
-func TestDeploymentController_IsReady(t *testing.T) {
+func TestDeploymentController_ScaleToZero(t *testing.T) {
 	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Error("Expected primary readiness check to fail")
-	}
+	mocks.initializeCanary(t)
 
-	_, err = mocks.controller.IsPrimaryReady(mocks.canary)
-	if err == nil {
-		t.Fatal(err.Error())
-	}
+	err := mocks.controller.ScaleToZero(mocks.canary)
+	require.NoError(t, err)
 
-	_, err = mocks.controller.IsCanaryReady(mocks.canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-}
-
-func TestDeploymentController_SetFailedChecks(t *testing.T) {
-	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	err = mocks.controller.SetStatusFailedChecks(mocks.canary, 1)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	res, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	if res.Status.FailedChecks != 1 {
-		t.Errorf("Got %v wanted %v", res.Status.FailedChecks, 1)
-	}
-}
-
-func TestDeploymentController_SetState(t *testing.T) {
-	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	err = mocks.controller.SetStatusPhase(mocks.canary, flaggerv1.CanaryPhaseProgressing)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	res, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	if res.Status.Phase != flaggerv1.CanaryPhaseProgressing {
-		t.Errorf("Got %v wanted %v", res.Status.Phase, flaggerv1.CanaryPhaseProgressing)
-	}
-}
-
-func TestDeploymentController_SyncStatus(t *testing.T) {
-	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	status := flaggerv1.CanaryStatus{
-		Phase:        flaggerv1.CanaryPhaseProgressing,
-		FailedChecks: 2,
-	}
-	err = mocks.controller.SyncStatus(mocks.canary, status)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	res, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	if res.Status.Phase != status.Phase {
-		t.Errorf("Got state %v wanted %v", res.Status.Phase, status.Phase)
-	}
-
-	if res.Status.FailedChecks != status.FailedChecks {
-		t.Errorf("Got failed checks %v wanted %v", res.Status.FailedChecks, status.FailedChecks)
-	}
-
-	if res.Status.TrackedConfigs == nil {
-		t.Fatalf("Status tracking configs are empty")
-	}
-	configs := *res.Status.TrackedConfigs
-	secret := newDeploymentControllerTestSecret()
-	if _, exists := configs["secret/"+secret.GetName()]; !exists {
-		t.Errorf("Secret %s not found in status", secret.GetName())
-	}
-}
-
-func TestDeploymentController_Scale(t *testing.T) {
-	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	err = mocks.controller.Scale(mocks.canary, 2)
-
-	c, err := mocks.kubeClient.AppsV1().Deployments("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	if *c.Spec.Replicas != 2 {
-		t.Errorf("Got replicas %v wanted %v", *c.Spec.Replicas, 2)
-	}
+	c, err := mocks.kubeClient.AppsV1().Deployments("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), *c.Spec.Replicas)
 }
 
 func TestDeploymentController_NoConfigTracking(t *testing.T) {
 	mocks := newDeploymentFixture()
 	mocks.controller.configTracker = &NopTracker{}
+	mocks.initializeCanary(t)
 
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	depPrimary, err := mocks.kubeClient.AppsV1().Deployments("default").Get(context.TODO(), "podinfo-primary", metav1.GetOptions{})
+	require.NoError(t, err)
 
-	depPrimary, err := mocks.kubeClient.AppsV1().Deployments("default").Get("podinfo-primary", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
-	_, err = mocks.kubeClient.CoreV1().ConfigMaps("default").Get("podinfo-config-env-primary", metav1.GetOptions{})
-	if !errors.IsNotFound(err) {
-		t.Fatalf("Primary ConfigMap shouldn't have been created")
-	}
+	_, err = mocks.kubeClient.CoreV1().ConfigMaps("default").Get(context.TODO(), "podinfo-config-env-primary", metav1.GetOptions{})
+	require.True(t, errors.IsNotFound(err), "Primary ConfigMap shouldn't have been created")
 
 	configName := depPrimary.Spec.Template.Spec.Volumes[0].VolumeSource.ConfigMap.LocalObjectReference.Name
-	if configName != "podinfo-config-vol" {
-		t.Errorf("Got config name %v wanted %v", configName, "podinfo-config-vol")
-	}
+	assert.Equal(t, "podinfo-config-vol", configName)
 }
 
 func TestDeploymentController_HasTargetChanged(t *testing.T) {
 	mocks := newDeploymentFixture()
-	err := mocks.controller.Initialize(mocks.canary, true)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	mocks.initializeCanary(t)
 
 	// save last applied hash
-	canary, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	canary, err := mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
+
 	err = mocks.controller.SyncStatus(canary, flaggerv1.CanaryStatus{Phase: flaggerv1.CanaryPhaseInitializing})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
 	// save last promoted hash
-	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	err = mocks.controller.SetStatusPhase(canary, flaggerv1.CanaryPhaseInitialized)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
 
-	dep, err := mocks.kubeClient.AppsV1().Deployments("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	err = mocks.controller.SetStatusPhase(canary, flaggerv1.CanaryPhaseInitialized)
+	require.NoError(t, err)
+
+	dep, err := mocks.kubeClient.AppsV1().Deployments("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	depClone := dep.DeepCopy()
 	depClone.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
@@ -292,35 +127,23 @@ func TestDeploymentController_HasTargetChanged(t *testing.T) {
 	}
 
 	// update pod spec
-	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(depClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(context.TODO(), depClone, metav1.UpdateOptions{})
+	require.NoError(t, err)
 
-	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	// detect change in last applied spec
 	isNew, err := mocks.controller.HasTargetChanged(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	if !isNew {
-		t.Errorf("Got %v wanted %v", isNew, true)
-	}
+	require.NoError(t, err)
+	assert.True(t, isNew)
 
 	// save hash
 	err = mocks.controller.SyncStatus(canary, flaggerv1.CanaryStatus{Phase: flaggerv1.CanaryPhaseProgressing})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	require.NoError(t, err)
 
-	dep, err = mocks.kubeClient.AppsV1().Deployments("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	dep, err = mocks.kubeClient.AppsV1().Deployments("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	depClone = dep.DeepCopy()
 	depClone.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
@@ -330,24 +153,16 @@ func TestDeploymentController_HasTargetChanged(t *testing.T) {
 	}
 
 	// update pod spec
-	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(depClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(context.TODO(), depClone, metav1.UpdateOptions{})
+	require.NoError(t, err)
 
-	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	// ignore change as hash should be the same with last promoted
 	isNew, err = mocks.controller.HasTargetChanged(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	if isNew {
-		t.Errorf("Got %v wanted %v", isNew, false)
-	}
+	require.NoError(t, err)
+	assert.False(t, isNew)
 
 	depClone = dep.DeepCopy()
 	depClone.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
@@ -357,22 +172,40 @@ func TestDeploymentController_HasTargetChanged(t *testing.T) {
 	}
 
 	// update pod spec
-	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(depClone)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	_, err = mocks.kubeClient.AppsV1().Deployments("default").Update(context.TODO(), depClone, metav1.UpdateOptions{})
+	require.NoError(t, err)
 
-	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get("podinfo", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	canary, err = mocks.flaggerClient.FlaggerV1beta1().Canaries("default").Get(context.TODO(), "podinfo", metav1.GetOptions{})
+	require.NoError(t, err)
 
 	// detect change
 	isNew, err = mocks.controller.HasTargetChanged(canary)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	if !isNew {
-		t.Errorf("Got %v wanted %v", isNew, true)
+	require.NoError(t, err)
+	assert.True(t, isNew)
+}
+
+func TestDeploymentController_Finalize(t *testing.T) {
+	mocks := newDeploymentFixture()
+
+	for _, tc := range []struct {
+		mocks          deploymentControllerFixture
+		callInitialize bool
+		canary         *flaggerv1.Canary
+	}{
+		// primary not found returns error
+		{mocks, false, mocks.canary},
+		// happy path
+		{mocks, true, mocks.canary},
+	} {
+		if tc.callInitialize {
+			mocks.initializeCanary(t)
+		}
+
+		err := mocks.controller.Finalize(tc.canary)
+		require.NoError(t, err)
+
+		c, err := mocks.kubeClient.AppsV1().Deployments(mocks.canary.Namespace).Get(context.TODO(), mocks.canary.Name, metav1.GetOptions{})
+		require.NoError(t, err)
+		require.Equal(t, int32(1), *c.Spec.Replicas)
 	}
 }

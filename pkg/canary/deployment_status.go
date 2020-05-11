@@ -1,10 +1,9 @@
 package canary
 
 import (
+	"context"
 	"fmt"
 
-	ex "github.com/pkg/errors"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	flaggerv1 "github.com/weaveworks/flagger/pkg/apis/flagger/v1beta1"
@@ -12,17 +11,14 @@ import (
 
 // SyncStatus encodes the canary pod spec and updates the canary status
 func (c *DeploymentController) SyncStatus(cd *flaggerv1.Canary, status flaggerv1.CanaryStatus) error {
-	dep, err := c.kubeClient.AppsV1().Deployments(cd.Namespace).Get(cd.Spec.TargetRef.Name, metav1.GetOptions{})
+	dep, err := c.kubeClient.AppsV1().Deployments(cd.Namespace).Get(context.TODO(), cd.Spec.TargetRef.Name, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("deployment %s.%s not found", cd.Spec.TargetRef.Name, cd.Namespace)
-		}
-		return ex.Wrap(err, "SyncStatus deployment query error")
+		return fmt.Errorf("deployment %s.%s get query error: %w", cd.Spec.TargetRef.Name, cd.Namespace, err)
 	}
 
 	configs, err := c.configTracker.GetConfigRefs(cd)
 	if err != nil {
-		return ex.Wrap(err, "SyncStatus configs query error")
+		return fmt.Errorf("GetConfigRefs failed: %w", err)
 	}
 
 	return syncCanaryStatus(c.flaggerClient, cd, status, dep.Spec.Template, func(cdCopy *flaggerv1.Canary) {
